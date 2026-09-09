@@ -1,0 +1,80 @@
+THIRD-PARTY NOTICES
+
+Onimusha DualSense is licensed under the MIT License in LICENSE.
+This file documents third-party components included with, downloaded by, or
+used to develop the mod. It does not cover the game, game audio, extracted
+assets, or generated haptic WAV files.
+
+INCLUDED COMPONENT
+
+PortAudio 19.7.0, Windows x64, no ASIO
+Copyright (c) 1999-2006 Ross Bencina and Phil Burk.
+Source: https://github.com/PortAudio/portaudio/tree/v19.7.0
+Binary distribution: https://github.com/spatialaudio/portaudio-binaries
+SHA-256: ec080194f01e4095c7fb43dbd7ed05af922c5b34295056a9ff56782741d65481
+The complete PortAudio license follows at the end of this file.
+
+The release contains the PortAudio DLL only. Python, the sounddevice wrapper,
+the ASIO SDK, and the .NET runtime are not bundled.
+
+SETUP DEPENDENCIES
+
+Setup downloads the following tools separately, verifies their fixed SHA-256
+values before execution, and runs them as independent processes:
+
+- .NET 10 Runtime: MIT and third-party notices.
+  https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+- REFramework: MIT; installed separately by the user.
+  https://github.com/praydog/REFramework/blob/master/LICENSE
+- ree-pak-cli v0.7.2: MIT.
+  https://github.com/eigeen/ree-pak-rs/blob/v0.7.2/LICENSE
+  SHA-256: bc4e561194a74faa3dbac06bd4ca0039eff85d047a8075c67895047212723101
+- vgmstream r2117: ISC-style notices and dependency licenses.
+  https://github.com/vgmstream/vgmstream/blob/r2117/COPYING
+  ZIP SHA-256: 6c4a8a3813864fefed081bbd337dbc0ad93bf88e0b92f5db98d7ab258b22dc6c
+
+The vgmstream archive may contain FFmpeg, LibAtrac9, CELT, G.719, mpg123,
+Speex, Vorbis, and related libraries. Their notices remain with the downloaded
+tool. Downloaded tools must not be added to the mod's release ZIP.
+
+DEVELOPMENT-ONLY REFERENCES
+
+- dualsensectl (GPL-2.0) was used only as a DualSense protocol reference.
+  https://github.com/nowrep/dualsensectl
+- wwiser was used for Wwise structure analysis. Its code and executables are
+  not distributed. https://github.com/bnnm/wwiser
+- Python (PSF License) and Lupa 2.8 (MIT) are used only by development tests
+  and are not distributed.
+
+This mod is unofficial and is not affiliated with Capcom, Sony, or the game
+developers.
+
+PORTAUDIO LICENSE
+
+Copyright (c) 1999-2006 Ross Bencina and Phil Burk
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The text above constitutes the entire PortAudio license; however, the
+PortAudio community also makes the following non-binding requests:
+
+Any person wishing to distribute modifications to the Software is requested
+to send the modifications to the original developer so that they can be
+incorporated into the canonical version. It is also requested that these
+non-binding requests be included along with the license above.

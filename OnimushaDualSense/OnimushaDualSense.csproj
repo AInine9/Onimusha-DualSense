@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <UseAppHost>false</UseAppHost>
+    <DeveloperTools Condition="'$(DeveloperTools)' == ''">false</DeveloperTools>
+    <DefineConstants Condition="'$(DeveloperTools)' == 'true'">$(DefineConstants);DEVELOPER</DefineConstants>
+    <AssemblyName>OnimushaDualSense</AssemblyName>
+    <Version>1.0.0</Version>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+  <ItemGroup><AssemblyAttribute Include="System.Runtime.Versioning.SupportedOSPlatformAttribute"><_Parameter1>windows</_Parameter1></AssemblyAttribute></ItemGroup>
+  <ItemGroup Condition="'$(DeveloperTools)' == 'true'"><Compile Include="../dev/*.cs" /></ItemGroup>
+</Project>

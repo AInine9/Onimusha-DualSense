@@ -1,0 +1,13 @@
+bin/
+obj/
+publish/
+publish-dev/
+release/
+development/
+audit-*/
+.vs/
+.dotnet/
+*.user
+*.suo
+*.pdb
+data/
