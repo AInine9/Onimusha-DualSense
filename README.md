@@ -7,7 +7,7 @@ An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds so
 - Windows x64, the supported PC version of the game, and one DualSense connected by USB.
 - [.NET 10 Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0). The .NET SDK is not required.
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
-- Steam Input disabled for this game, with the DualSense audio device enabled in Windows.
+- Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
 
 ## Installation and use
 
