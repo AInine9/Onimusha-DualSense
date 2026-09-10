@@ -24,7 +24,7 @@ static class Program
                     return 0;
                 case "prepare-waves": PreparedWaves.Prepare(args.Contains("--force")); return 0;
                 case "diagnose":
-                    Console.WriteLine($"Onimusha DualSense 1.0 / {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
+                    Console.WriteLine($"Onimusha DualSense 1.1 / {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
                     Console.WriteLine("Game running: " + Files.GameRunning());
                     Console.WriteLine("USB DualSense HID devices: " + Hid.Find().Count);
                     Console.WriteLine("Steam game: " + Setup.Discover()); return 0;
@@ -42,7 +42,7 @@ static class Program
                     DefenseSounds.Prepare(Path.GetFullPath(args[1]), Path.GetFullPath(args[2])); return 0;
 #endif
                 default:
-                    Console.WriteLine("Onimusha DualSense 1.0\nCommands: setup, launch, run, stop, uninstall, diagnose, prepare-waves");
+                    Console.WriteLine("Onimusha DualSense 1.1\nCommands: setup, launch, run, stop, uninstall, diagnose, prepare-waves");
                     return command == "help" ? 0 : 1;
             }
         }

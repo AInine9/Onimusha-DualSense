@@ -1,4 +1,4 @@
-# Onimusha DualSense 1.0
+# Onimusha DualSense 1.1
 
 An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds sound- and action-based haptic feedback and adaptive-trigger effects for a USB-connected DualSense controller.
 
@@ -9,7 +9,7 @@ An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds so
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
 - Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
 
-Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance remains enabled.
+Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance is enabled by default.
 
 ## Installation and use
 
@@ -17,7 +17,7 @@ Bow charging preserves the game's original vibration and prevents MOD footsteps 
 2. Close the game and run `Setup.cmd`. On the first run, Setup downloads the required external tools and generates haptic data from your local game files.
 3. Connect the DualSense by USB and run `Start-Mod.cmd` to start the mod and the game. The mod stops after the game exits.
 
-Change the overall haptic strength in `config.json` with `gain` (0–1; default `1.0`). Restart the mod after changing it. Setup writes the `game` path automatically.
+Change the overall haptic strength in `config.json` with `gain` (0–1; default `1.0`). Set `adaptive_triggers` to `false` to disable trigger resistance; it defaults to `true` when omitted. Restart the mod after changing either setting. Setup writes the `game` path automatically.
 
 `Stop-Mod.cmd` stops the mod without stopping the game. To remove the mod, close the game and run `Uninstall.cmd`; if an earlier version of the mod script was installed, it is restored.
 

@@ -142,7 +142,7 @@ static class Bridge
                 if (now - lastControl > 1) { queue.Clear(); active = false; trigger = -1; suppress = false; }
                 if (trigger != lastTrigger) { Files.Log($"Trigger={trigger}; active={active}"); lastTrigger = trigger; }
                 byte[] right = Protocol.Off, left = Protocol.Off;
-                if (effects.TryGetValue(trigger, out var effect))
+                if (config.AdaptiveTriggers && effects.TryGetValue(trigger, out var effect))
                 {
                     int which = profiles[trigger]["_Which"]!.GetValue<int>();
                     if (which is 0 or 2) right = effect; if (which is 1 or 2) left = effect;

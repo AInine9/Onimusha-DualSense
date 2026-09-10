@@ -1,4 +1,4 @@
-# Onimusha DualSense 1.0
+# Onimusha DualSense 1.1
 
 An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds sound- and action-based haptic feedback and adaptive-trigger effects for a USB-connected DualSense controller.
 
@@ -9,7 +9,7 @@ An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds so
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
 - Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
 
-Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance remains enabled.
+Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance is enabled by default.
 
 ## Installation and use
 

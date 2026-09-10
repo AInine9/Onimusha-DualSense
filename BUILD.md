@@ -8,6 +8,8 @@ dotnet publish OnimushaDualSense -c Release -o publish --configfile NuGet.Config
 ./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory nexus-release -NexusMod
 ```
 
+This checkout also keeps a project-local .NET 10 SDK at `.dotnet/sdk-10.0.400/dotnet.exe` for repeatable builds when the system installation has no SDK. Set `DOTNET_CLI_HOME` to the ignored `.dotnet-cli-home` folder and invoke that executable with the same commands.
+
 Package `github-release` for GitHub; it includes the four public CMD launchers. Package `nexus-release` for NexusMods; `-NexusMod` omits all CMD launchers. Do not include generated game audio, logs, backups, or development tools in any package. `UseAppHost=false` produces a .NET DLL; PortAudio is the bundled native DLL. Choose a new output directory each time you run the packaging script.
 
 The public repository intentionally contains only the runtime source and release packaging. The local inspector, test harnesses, recordings, and diagnostic traces are kept outside version control and are not required to build the release package.

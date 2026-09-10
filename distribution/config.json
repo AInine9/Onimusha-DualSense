@@ -1,4 +1,5 @@
 {
   "game": "",
-  "gain": 1.0
+  "gain": 1.0,
+  "adaptive_triggers": true
 }
