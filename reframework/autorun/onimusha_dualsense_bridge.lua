@@ -1,4 +1,4 @@
--- Onimusha DualSense bridge 1.1. Sound-derived haptics and adaptive triggers.
+-- Onimusha DualSense bridge 1.1.1. Sound-derived haptics and adaptive triggers.
 local path = 'onimusha_dualsense_bridge.json'
 local enabled, frames, sequence, event_id = true, 0, 0, 0
 local candidate, checking, events, errors = -1, false, {}, {}
@@ -535,7 +535,7 @@ re.on_application_entry('LateUpdateBehavior', function()
     end
 end)
 re.on_draw_ui(function()
-    if imgui.tree_node('Onimusha DualSense 1.1') then
+    if imgui.tree_node('Onimusha DualSense 1.1.1') then
         local changed,value=imgui.checkbox('Enable feedback bridge',enabled)
         if changed then enabled=value; if not enabled then emit('stop') end end
         imgui.text('Start-Mod.cmd must be running.')

@@ -1,4 +1,4 @@
-# Onimusha DualSense 1.1
+# Onimusha DualSense 1.1.1
 
 An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds sound- and action-based haptic feedback and adaptive-trigger effects for a USB-connected DualSense controller.
 
