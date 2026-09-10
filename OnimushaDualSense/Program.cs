@@ -18,9 +18,10 @@ static class Program
                 case "run": return Bridge.Run(args);
                 case "stop": File.WriteAllText(Files.Data("stop.request"), "stop"); return 0;
                 case "launch":
-                    if (string.IsNullOrWhiteSpace(Configuration.Read().Game)) throw new InvalidOperationException("Run Setup.cmd first");
+                    var config = Configuration.Read();
+                    if (string.IsNullOrWhiteSpace(config.Game)) throw new InvalidOperationException("Run Setup.cmd first");
                     using (AppHost.Launch("run")) { }
-                    if (!args.Contains("--no-game")) Process.Start(new ProcessStartInfo("steam://rungameid/2638890") { UseShellExecute = true });
+                    if (ShouldAutoLaunchGame(config, args)) Process.Start(new ProcessStartInfo("steam://rungameid/2638890") { UseShellExecute = true });
                     return 0;
                 case "prepare-waves": PreparedWaves.Prepare(args.Contains("--force")); return 0;
                 case "diagnose":
@@ -53,4 +54,7 @@ static class Program
             return 1;
         }
     }
+
+    internal static bool ShouldAutoLaunchGame(Configuration config, string[] args) =>
+        config.AutoLaunchGame && !args.Contains("--no-game");
 }

@@ -13,7 +13,7 @@ Bow charging preserves the game's original vibration and prevents MOD footsteps 
 
 ## Install
 
-Download the GitHub release ZIP, extract it to a writable folder, close the game, and run `Setup.cmd`. The GitHub package includes the four public launchers. The NexusMods package is launcher-free and uses the copy-and-paste CMD snippets on the mod download page. Setup downloads checksum-pinned tools and generates haptic data from the user's local game files. Connect the DualSense by USB, then run `Start-Mod.cmd`.
+Download the GitHub release ZIP, extract it to a writable folder, close the game, and run `Setup.cmd`. The GitHub package includes the four public launchers. The NexusMods package is launcher-free and uses the copy-and-paste CMD snippets on the mod download page. Setup downloads checksum-pinned tools and generates haptic data from the user's local game files. Connect the DualSense by USB, then run `Start-Mod.cmd`. Set `auto_launch_game` to `false` in `config.json` when the game should be started separately from Steam.
 
 See the [distribution README](distribution/README.md) for complete installation, configuration, and troubleshooting instructions.
 

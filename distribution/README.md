@@ -19,7 +19,7 @@ Bow charging preserves the game's original vibration and prevents MOD footsteps 
 
 ## Configuration
 
-Change the overall haptic strength in `config.json` with `gain` (0–1; default `1.0`). Set `adaptive_triggers` to `false` to disable trigger resistance; it defaults to `true` when omitted. Restart the mod after changing either setting. Setup writes the `game` path automatically.
+Change the overall haptic strength in `config.json` with `gain` (0–1; default `1.0`). Set `adaptive_triggers` to `false` to disable trigger resistance; it defaults to `true` when omitted. Set `auto_launch_game` to `false` to start the companion without launching Steam; then launch the game normally from Steam. It defaults to `true` when omitted. For a one-time override, run `Start-Mod.cmd --no-game`. Restart the mod after changing any setting. Setup writes the `game` path automatically.
 
 `Stop-Mod.cmd` stops the mod without stopping the game. To remove the mod, close the game and run `Uninstall.cmd`; if an earlier version of the mod script was installed, it is restored.
 
