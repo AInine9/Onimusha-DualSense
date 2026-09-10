@@ -118,7 +118,7 @@ sealed class ExtendedEffects
                             samples[cutId] = cutData; CutSamples[sampleId] = cutId; SoundInfo[cutId] = SoundInfo[sampleId];
                         }
                     }
-                    if (source.Family == "guard")
+                    if (source.Family is "guard" or "contact")
                     {
                         for (int i = 0; i < files.Count; i++)
                         {
@@ -209,12 +209,14 @@ sealed class ExtendedEffects
 
 sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> log)
 {
-    record Request(string Id, long Sequence, long Frame, double Time, ExtraEffect Extra, bool Layer = false, string Technique = "");
+    record Request(string Id, long Sequence, long Frame, double Time, ExtraEffect Extra, bool Layer = false, string Technique = "", bool Contact = false, bool ParryContact = false, bool GuardSource = false);
     readonly List<Request> pending = [];
     readonly Dictionary<string, double> cooldowns = [];
     readonly Dictionary<string, int> nextVariant = [];
     int activePriority;
     string activeKind = "";
+    bool activeBaseFriction;
+    string? activeBaseOwner;
     double defenseContactTime = double.NegativeInfinity;
     long defenseContactFrame = -1000;
     bool defenseLayerUsed;
@@ -223,18 +225,32 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     double combatUntil;
     double contactUntil;
     double suppressUntil;
-    string? parryVoice;
+    readonly Dictionary<string, HashSet<string>> parryVoices = [];
     Request? recentGuard;
     public string DefenseKind { get; private set; } = "none";
     public int ParryPlays { get; private set; }
     public void StopParry(string id)
     {
         pending.RemoveAll(p => p.Extra.Kind == "parry" && p.Extra.Id == id);
-        if (parryVoice?.StartsWith("ext:" + id + "#", StringComparison.Ordinal) == true)
+        if (parryVoices.Remove(id, out var voices))
         {
-            mixer.FadeOut(parryVoice); parryVoice = null; activePriority = 0;
+            bool removedBase = activeBaseFriction && activeBaseOwner == id;
+            foreach (string voice in voices) mixer.FadeOut(voice);
+            if (removedBase) { activeBaseFriction = false; activeBaseOwner = null; activePriority = 0; activeKind = ""; }
             log($"Defense sound STOP id={id}");
         }
+    }
+    void TrackParryVoice(string owner, string voice)
+    {
+        if (!parryVoices.TryGetValue(owner, out var voices)) parryVoices[owner] = voices = [];
+        voices.Add(voice);
+    }
+    void FadeParryVoices()
+    {
+        bool removedBase = activeBaseFriction && activeBaseOwner != null && parryVoices.ContainsKey(activeBaseOwner);
+        foreach (string voice in parryVoices.Values.SelectMany(voices => voices).Distinct()) mixer.FadeOut(voice);
+        parryVoices.Clear();
+        if (removedBase) { activeBaseFriction = false; activeBaseOwner = null; activePriority = 0; activeKind = ""; }
     }
     public void SetDefense(string kind, double now)
     {
@@ -242,12 +258,14 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
         string previous = DefenseKind; DefenseKind = kind;
         if (previous == "deflect" && kind != "deflect") activePriority = Math.Min(activePriority, 9);
         log($"Defense state={kind} previous={previous}");
-        if (kind != "parry")
+        // Wwise can briefly report none while a parry friction voice is still playing.
+        // Keep that voice alive until its explicit parry_stop event arrives. Explicit
+        // alternative defenses still terminate it immediately.
+        bool transientParryExit = previous == "parry" && kind == "none";
+        if (kind != "parry" && !transientParryExit)
         {
             pending.RemoveAll(p => p.Extra.Kind == "parry");
-            if (parryVoice != null) mixer.FadeOut(parryVoice);
-            if (parryVoice != null) activePriority = 0;
-            parryVoice = null;
+            FadeParryVoices();
             // Explicit alternative defenses must never be promoted on a later parry.
             if (kind is "guard" or "deflect" or "dodge" || previous == "parry") recentGuard = null;
             return;
@@ -255,7 +273,8 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
         if (recentGuard is { } p && now - p.Time <= .25 && effects.ParrySamples.TryGetValue(p.Id, out var replacement)
             && mixer.Replace(p.Id, replacement))
         {
-            parryVoice = replacement; ParryPlays++;
+            TrackParryVoice(p.Extra.Id, replacement); ParryPlays++;
+            activeBaseFriction = true; activeBaseOwner = p.Extra.Id;
             log($"Extended haptic PLAY id=parry_{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={replacement} promoted=true");
         }
         recentGuard = null;
@@ -263,7 +282,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     public Dictionary<string, int> Skipped { get; } = [];
     public bool CombatWindow(double now) => now < suppressUntil;
     public bool RequiresSuppression(bool gameplay, bool ui, double now) =>
-        ((gameplay || ui) && HasWork) || (gameplay && CombatWindow(now));
+        !NativeBow && (((gameplay || ui) && HasWork) || (gameplay && CombatWindow(now)));
     void Skip(string id, string reason, long sequence, long frame)
     {
         string key = id + ":" + reason; Skipped[key] = Skipped.GetValueOrDefault(key) + 1;
@@ -271,24 +290,36 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     }
     public Dictionary<string, int> ExtraPlays { get; } = [];
     public bool HasWork => pending.Count > 0 || mixer.Playing;
-    public void Clear() { pending.Clear(); mixer.Stop(); activePriority = 0; suppressUntil = 0; parryVoice = null; recentGuard = null; DefenseKind = "none"; defenseContactTime = double.NegativeInfinity; cutTime = double.NegativeInfinity; cutLayers = 0; }
+    public bool NativeBow { get; private set; }
+    public void SetNativeBow(bool enabled)
+    {
+        if (NativeBow == enabled) return;
+        Clear(); NativeBow = enabled;
+    }
+    public void Clear() { pending.Clear(); mixer.Stop(); parryVoices.Clear(); activePriority = 0; activeKind = ""; activeBaseFriction = false; activeBaseOwner = null; suppressUntil = 0; recentGuard = null; DefenseKind = "none"; defenseContactTime = double.NegativeInfinity; cutTime = double.NegativeInfinity; cutLayers = 0; }
     public void SetActivity(bool gameplay, bool ui)
     {
         if (!gameplay && !ui) { Clear(); return; }
         if (!gameplay)
         {
             pending.RemoveAll(p => p.Extra.IsUi != true); mixer.StopGameplay(); suppressUntil = 0;
-            parryVoice = null; recentGuard = null; DefenseKind = "none"; defenseContactTime = double.NegativeInfinity;
+            parryVoices.Clear(); activePriority = 0; activeKind = ""; activeBaseFriction = false; activeBaseOwner = null; recentGuard = null; DefenseKind = "none"; defenseContactTime = double.NegativeInfinity;
         }
         if (!ui) pending.RemoveAll(p => p.Extra.IsUi == true);
     }
-    public void Extended(string id, long sequence, long frame, double now, JsonNode? switches = null, string technique = "")
+    public void Extended(string id, long sequence, long frame, double now, JsonNode? switches = null, string technique = "", string? defenseKind = null)
     {
+        if (NativeBow) { Skip(id, "native_bow", sequence, frame); return; }
         if (!effects.Available.TryGetValue(id, out var effect)) { Skip(id, "unavailable", sequence, frame); return; }
         bool cut = technique is "issen" or "deadheat" && effect.Kind is "attack" or "contact" or "special_motion";
+        bool contact = effect.Kind == "contact" && !cut;
+        bool parryContact = contact && defenseKind == "parry";
+        bool guardSource = effect.Kind == "guard";
+        string originalFamily = effect.Family;
+        if (parryContact) effect = effect with { Family = "parry" };
         if (effect.Kind == "special_motion" && !cut) { Skip(id, "not_special_attack", sequence, frame); return; }
         if (cut) effect = effect with { Priority = 13, Family = "cut", Cooldown = .035 };
-        if (effect.Kind == "parry" && DefenseKind != "parry") { Skip(id, "not_parry", sequence, frame); return; }
+        if (effect.Kind == "parry" && DefenseKind != "parry" && !parryContact) { Skip(id, "not_parry", sequence, frame); return; }
         if (effect.Kind == "deflect" && DefenseKind != "deflect") { Skip(id, "not_deflect", sequence, frame); return; }
         SoundChoice[]? compatible = null;
         if (effects.SoundChoices.TryGetValue(id, out var choices))
@@ -299,11 +330,11 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
         if (effect.Kind is "cut" or "attack" or "hit" or "guard" or "parry" or "parry_release" or "deflect" or "damage" or "finisher" or "contact" or "perfect_dodge" or "power") suppressUntil = now + .8;
         if (effect.Category == "footsteps" && now < combatUntil) { Skip(id, "combat_masks_step", sequence, frame); return; }
         if (effect.Kind == "attack" && now < contactUntil) { Skip(id, "contact_masks_attack", sequence, frame); return; }
-        if (effect.Kind is "hit" or "guard" or "damage" or "finisher" or "contact") contactUntil = now + .12;
-        if (effect.Kind is "attack" or "hit" or "guard" or "damage" or "finisher" or "contact") combatUntil = now + .4;
-        string cooldownKey = cut ? "cut:" + id : effect.Family.Length > 0 ? effect.Family : id;
+        if (effect.Kind is "hit" or "guard" or "damage" or "finisher" || contact) contactUntil = now + .12;
+        if (effect.Kind is "attack" or "hit" or "guard" or "damage" or "finisher" || contact) combatUntil = now + .4;
+        string cooldownKey = cut ? "cut:" + id : parryContact ? originalFamily.Length > 0 ? originalFamily : id : effect.Family.Length > 0 ? effect.Family : id;
         if (now - cooldowns.GetValueOrDefault(cooldownKey, double.NegativeInfinity) < effect.Cooldown) { Skip(id, "cooldown", sequence, frame); return; }
-        bool layer = effect.Kind == "contact" && DefenseKind is "guard" or "parry" or "deflect"
+        bool layer = contact && DefenseKind is "guard" or "parry" or "deflect"
             && !defenseLayerUsed && now - defenseContactTime <= .08 && Math.Abs(frame - defenseContactFrame) <= 3;
         if (cut)
         {
@@ -321,7 +352,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
             foreach (var displaced in pending) Skip(displaced.Extra.Id, "replaced_pending", displaced.Sequence, displaced.Frame);
             pending.Clear();
         }
-        if (effect.Kind is "guard" or "parry" or "deflect")
+        if (!parryContact && (effect.Kind is "guard" or "parry" or "deflect"))
         {
             defenseContactTime = now; defenseContactFrame = frame; defenseLayerUsed = false;
         }
@@ -337,7 +368,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
             sample = variants[index % variants.Length]; nextVariant[id] = index + 1;
         }
         if (cut && effects.CutSamples.TryGetValue(sample, out var cutSample)) sample = cutSample;
-        pending.Add(new(sample, sequence, frame, now, effect, layer, cut ? technique : ""));
+        pending.Add(new(sample, sequence, frame, now, effect, layer, cut ? technique : "", contact, parryContact, guardSource));
     }
     public void Dispatch(bool acknowledged, double now)
     {
@@ -346,21 +377,23 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
         if (!acknowledged) return;
         foreach (var p in pending)
         {
-            if (!p.Layer) { mixer.Stop(); activePriority = p.Extra.Priority; activeKind = p.Extra.Kind; }
+            if (!p.Layer) { parryVoices.Clear(); mixer.Stop(); activePriority = p.Extra.Priority; activeKind = p.Extra.Kind; activeBaseFriction = false; activeBaseOwner = null; }
             string selected = p.Id;
-            if (!p.Layer)
+            bool friction = p.Extra.Kind == "parry";
+            if (!p.Layer) recentGuard = null;
+            if (effects.ParrySamples.TryGetValue(p.Id, out var parry)
+                && (p.ParryContact || p.GuardSource && DefenseKind == "parry"))
             {
-                parryVoice = null; recentGuard = null;
-                if (p.Extra.Kind == "parry") parryVoice = selected;
-                if (effects.ParrySamples.TryGetValue(p.Id, out var parry))
-                {
-                    if (DefenseKind == "parry") { selected = parry; parryVoice = parry; }
-                    else if (DefenseKind is "none" or "unknown") recentGuard = p;
-                }
+                selected = parry; friction = true;
+            }
+            if (!p.Layer && !friction && p.GuardSource && DefenseKind is "none" or "unknown")
+            {
+                recentGuard = p;
             }
             if (!mixer.Play(selected, level: p.Layer ? .6f : 1)) continue;
-            if (parryVoice == selected) ParryPlays++;
-            { ExtraPlays[p.Extra.Id] = ExtraPlays.GetValueOrDefault(p.Extra.Id) + 1; log($"Extended haptic PLAY id={(p.Technique.Length > 0 ? p.Technique + "_" : parryVoice == selected && !p.Extra.Id.StartsWith("defense_") ? "parry_" : "")}{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={selected} layer={p.Layer}"); }
+            if (!p.Layer) { activeBaseFriction = friction; activeBaseOwner = friction ? p.Extra.Id : null; }
+            if (friction) { TrackParryVoice(p.Extra.Id, selected); ParryPlays++; }
+            { ExtraPlays[p.Extra.Id] = ExtraPlays.GetValueOrDefault(p.Extra.Id) + 1; log($"Extended haptic PLAY id={(p.Technique.Length > 0 ? p.Technique + "_" : friction && !p.Extra.Id.StartsWith("defense_") ? "parry_" : "")}{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={selected} layer={p.Layer}"); }
         }
         pending.Clear();
     }
