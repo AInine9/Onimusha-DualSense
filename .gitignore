@@ -7,6 +7,7 @@ development/
 audit-*/
 .vs/
 .dotnet/
+.dotnet-cli-home/
 *.user
 *.suo
 *.pdb
@@ -22,6 +23,7 @@ dev/
 .agents/
 .codex/
 AGENTS.md
+LOCAL_BUILD.md
 CURRENT_STATE.md
 STRUCTURE.md
 docs/
