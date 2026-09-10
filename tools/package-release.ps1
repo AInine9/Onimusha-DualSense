@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$PublishDirectory,
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
-    [switch]$Developer
+    [switch]$NexusMod
 )
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
@@ -19,21 +19,34 @@ Copy-Item -LiteralPath (Join-Path $project 'reframework/autorun/onimusha_dualsen
 foreach ($name in @('README.md','LICENSE','THIRD_PARTY_NOTICES.txt','config.json')) {
     Copy-Item -LiteralPath (Join-Path $project ('distribution/' + $name)) -Destination $release
 }
-$launchers = [ordered]@{'Setup'='setup'; 'Start-Mod'='launch'; 'Stop-Mod'='stop'; 'Uninstall'='uninstall'}
-if ($Developer) { $launchers['Inspect-Haptics']='inspect' }
-foreach ($entry in $launchers.GetEnumerator()) {
-    $lines = @('@echo off','setlocal','cd /d "%~dp0"','set "modDotnet=%ProgramFiles%\dotnet\dotnet.exe"',
-        'if not exist "%modDotnet%" set "modDotnet=dotnet"',
-        ('"%modDotnet%" "%~dp0bin\OnimushaDualSense.dll" ' + $entry.Value + ' %*'),
-        'set "modExit=%ERRORLEVEL%"')
-    if ($entry.Key -in 'Setup','Uninstall') { $lines += 'pause' } else { $lines += 'if not "%modExit%"=="0" pause' }
-    $lines += 'exit /b %modExit%'
-    [IO.File]::WriteAllText((Join-Path $release ($entry.Key + '.cmd')), ($lines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
-}
-if ($Developer) {
-    New-Item -ItemType Directory -Path (Join-Path $release 'data') | Out-Null
-    foreach ($name in @('finisher-replay.json','defense-replay.json')) {
-        Copy-Item -LiteralPath (Join-Path $project ('dev/' + $name)) -Destination (Join-Path $release 'data')
+
+if (-not $NexusMod) {
+    $launchers = [ordered]@{
+        'Setup.cmd' = 'setup'
+        'Start-Mod.cmd' = 'launch'
+        'Stop-Mod.cmd' = 'stop'
+        'Uninstall.cmd' = 'uninstall'
+    }
+    foreach ($item in $launchers.GetEnumerator()) {
+        $lines = @('@echo off','setlocal','cd /d "%~dp0"','set "modDotnet=%ProgramFiles%\dotnet\dotnet.exe"',
+            'if not exist "%modDotnet%" set "modDotnet=dotnet"',
+            ('"%modDotnet%" "%~dp0bin\OnimushaDualSense.dll" ' + $item.Value + ' %*'),
+            'set "modExit=%ERRORLEVEL%"')
+        if ($item.Key -in @('Setup.cmd','Uninstall.cmd')) { $lines += 'pause' }
+        else { $lines += 'if not "%modExit%"=="0" pause' }
+        $lines += 'exit /b %modExit%'
+        [IO.File]::WriteAllText((Join-Path $release $item.Key), ($lines -join "`r`n") + "`r`n", [Text.Encoding]::ASCII)
     }
 }
+
+$allowedLaunchers = if ($NexusMod) {
+    @()
+} else {
+    @('Setup.cmd','Start-Mod.cmd','Stop-Mod.cmd','Uninstall.cmd')
+}
+$blocked = Get-ChildItem -LiteralPath $release -Recurse -File | Where-Object {
+    $_.Extension -in '.cmd','.bat','.exe','.ps1','.vbs','.lnk','.msi' -and
+    -not ($_.Directory.FullName -eq $release -and $_.Name -in $allowedLaunchers)
+}
+if ($blocked) { throw 'Distribution must not contain executable launchers or scripts.' }
 Write-Output $release

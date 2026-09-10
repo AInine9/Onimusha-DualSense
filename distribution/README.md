@@ -4,14 +4,16 @@ An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds so
 
 ## Requirements
 
-- Windows x64, the supported PC version of the game, and one DualSense connected by USB.
+- Windows x64, the supported PC version of the game, and one DualSense or DualSense Edge connected by USB. Edge support is provisional and has not been tested on physical hardware.
 - [.NET 10 Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0). The .NET SDK is not required.
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
 - Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
 
+Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance remains enabled.
+
 ## Installation and use
 
-1. Extract the ZIP to a writable folder.
+1. Extract the ZIP to a writable folder. GitHub distribution ZIPs include `Setup.cmd`, `Start-Mod.cmd`, `Stop-Mod.cmd`, and `Uninstall.cmd`. NexusMods ZIPs intentionally omit them; create those four files using the copy-and-paste instructions on the mod download page.
 2. Close the game and run `Setup.cmd`. On the first run, Setup downloads the required external tools and generates haptic data from your local game files.
 3. Connect the DualSense by USB and run `Start-Mod.cmd` to start the mod and the game. The mod stops after the game exits.
 

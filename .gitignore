@@ -11,3 +11,18 @@ audit-*/
 *.suo
 *.pdb
 data/
+
+# Local continuation work
+work/
+outputs/
+__pycache__/
+
+# Local development-only tools and continuation metadata
+dev/
+.agents/
+.codex/
+AGENTS.md
+CURRENT_STATE.md
+STRUCTURE.md
+docs/
+tools/launcher-baseline.md

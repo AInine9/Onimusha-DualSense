@@ -1,26 +1,23 @@
-# 開発とビルド
+# Building
 
-Windows x64 / .NET 10 SDKを使用します。以下はソースのルートで実行します。
+Use Windows x64 and the .NET 10 SDK. Run these commands from the source root:
 
 ```powershell
 dotnet publish OnimushaDualSense -c Release -o publish --configfile NuGet.Config
-./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory release
+./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory github-release
+./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory nexus-release -NexusMod
 ```
 
-`release` が配布用です。ゲーム音源、ログ、バックアップ、開発ツールを含めず、Setup前の状態でZIPにしてください。`UseAppHost=false` により本体はDLL形式です。PortAudioのみネイティブDLLを同梱しています。
+Package `github-release` for GitHub; it includes the four public CMD launchers. Package `nexus-release` for NexusMods; `-NexusMod` omits all CMD launchers. Do not include generated game audio, logs, backups, or development tools in any package. `UseAppHost=false` produces a .NET DLL; PortAudio is the bundled native DLL. Choose a new output directory each time you run the packaging script.
 
-インスペクターとテストを含む開発版:
+The public repository intentionally contains only the runtime source and release packaging. The local inspector, test harnesses, recordings, and diagnostic traces are kept outside version control and are not required to build the release package.
 
-```powershell
-dotnet publish OnimushaDualSense -c Release -p:DeveloperTools=true -o publish-dev --configfile NuGet.Config
-./tools/package-release.ps1 -PublishDirectory publish-dev -OutputDirectory development -Developer
-dotnet development/bin/OnimushaDualSense.dll test
-python -m pip install lupa==2.8
-python dev/test_lua.py
-```
+Normal startup loads prepared WAV files with a 64 MiB sample cache. The mixer applies `gain` once at output. To force regeneration, run `dotnet bin/OnimushaDualSense.dll prepare-waves --force` from the extracted mod folder.
 
-開発版も `Setup.cmd` で音源を準備できます。その後 `test` を再実行すると実音源・記録済みイベントも検証します。`verify-prepared` は生成WAV全件と再生分岐を確認します。インスペクターは `Inspect-Haptics.cmd` で起動します。これらは配布版にはコンパイルされません。
+`run --seconds 3` checks device connection and cleanup. Live game notifications can produce feedback, so close the game before testing idle silence. Automated checks do not replace in-game testing of timing and feel.
 
-通常起動は生成済みWAVを読み、音源キャッシュは64MiBです。`gain` は出力時に一度だけ適用します。強制再生成は `dotnet bin/OnimushaDualSense.dll prepare-waves --force` です。
+## Runtime checks
 
-`run --seconds 3` は接続と終了処理の確認用です。新しいゲーム通知があると出力するので、無音確認はゲーム終了中に行ってください。ライセンスは `distribution/LICENSE`、第三者告知は `distribution/THIRD_PARTY_NOTICES.txt` を参照してください。
+GitHub distribution ZIPs include `Setup.cmd`, `Start-Mod.cmd`, `Stop-Mod.cmd`, and `Uninstall.cmd`. NexusMods distribution ZIPs are created with `-NexusMod` and contain none of those launchers; users create those files using the copy-and-paste instructions on the mod page. Generated game audio, logs, and backups remain excluded from every package.
+
+See `distribution/LICENSE` and `distribution/THIRD_PARTY_NOTICES.txt` for license information.
