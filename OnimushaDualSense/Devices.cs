@@ -4,7 +4,14 @@ using Microsoft.Win32.SafeHandles;
 
 namespace OnimushaDualSense;
 
-sealed class Hid : IDisposable
+sealed class HidUnavailableException(string message) : Exception(message);
+
+interface IHidOutput : IDisposable
+{
+    void Send(byte[] report);
+}
+
+sealed class Hid : IHidOutput
 {
     readonly SafeFileHandle handle;
     readonly int reportLength;
@@ -75,7 +82,7 @@ sealed class Hid : IDisposable
     }
     public Hid()
     {
-        var paths = Find(); if (paths.Count != 1) throw new InvalidOperationException($"Expected one USB DualSense HID; found {paths.Count}");
+        var paths = Find(); if (paths.Count != 1) throw new HidUnavailableException($"Expected one USB DualSense HID; found {paths.Count}");
         reportLength = paths[0].ReportLength;
         handle = CreateFileW(paths[0].Path, 0x40000000, 3, 0, 3, 0, 0);
         if (handle.IsInvalid) throw new Win32Exception();
@@ -87,6 +94,106 @@ sealed class Hid : IDisposable
         if (!WriteFile(handle, report, (uint)report.Length, out uint count, 0) || count != report.Length) throw new Win32Exception(Marshal.GetLastWin32Error(), "USB HID write failed");
     }
     public void Dispose() => handle.Dispose();
+}
+
+sealed class HidRecovery : IDisposable
+{
+    readonly Func<IHidOutput> factory;
+    readonly Action<string> log;
+    IHidOutput? output;
+    double nextOpen;
+    double backoff = .5;
+    bool disposed;
+
+    public HidRecovery(IHidOutput initial, Func<IHidOutput> factory, Action<string> log)
+    {
+        output = initial;
+        this.factory = factory;
+        this.log = log;
+    }
+
+    public bool TrySend(byte[] report, double now)
+    {
+        if (disposed) throw new ObjectDisposedException(nameof(HidRecovery));
+        if (output == null)
+        {
+            if (now < nextOpen) return false;
+            IHidOutput candidate;
+            try { candidate = factory(); }
+            catch (Win32Exception e) { ReopenFailed(now, e); return false; }
+            catch (HidUnavailableException e) { ReopenFailed(now, e); return false; }
+            try
+            {
+                candidate.Send(Protocol.Report(audio: false));
+                output = candidate;
+                backoff = .5;
+                log("USB HID reopened; both triggers released.");
+            }
+            catch (Win32Exception e)
+            {
+                DisposeFailed(candidate);
+                ReopenFailed(now, e);
+                return false;
+            }
+        }
+        try
+        {
+            output.Send(report);
+            backoff = .5;
+            return true;
+        }
+        catch (Win32Exception e)
+        {
+            log($"USB HID write failed; native error {e.NativeErrorCode}: {e.Message}; retrying in {backoff:0.0}s.");
+            ReleaseFailedOutput();
+            ScheduleRetry(now);
+            return false;
+        }
+    }
+
+    public void Release()
+    {
+        if (output == null) return;
+        try { output.Send(Protocol.Report(audio: false)); }
+        catch (Win32Exception e) { log($"USB HID release failed; native error {e.NativeErrorCode}: {e.Message}"); }
+    }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        Release();
+        output?.Dispose();
+        output = null;
+    }
+
+    void ReleaseFailedOutput()
+    {
+        var failed = output;
+        output = null;
+        if (failed == null) return;
+        try { failed.Send(Protocol.Report(audio: false)); }
+        catch (Win32Exception e) { log($"USB HID release after failure failed; native error {e.NativeErrorCode}: {e.Message}"); }
+        finally { failed.Dispose(); }
+    }
+
+    void DisposeFailed(IHidOutput failed)
+    {
+        try { failed.Dispose(); }
+        catch (Win32Exception e) { log($"USB HID failed-output dispose failed; native error {e.NativeErrorCode}: {e.Message}"); }
+    }
+
+    void ReopenFailed(double now, Exception e)
+    {
+        log($"USB HID reopen failed: {e.Message}; retrying in {backoff:0.0}s.");
+        ScheduleRetry(now);
+    }
+
+    void ScheduleRetry(double now)
+    {
+        nextOpen = now + backoff;
+        backoff = Math.Min(5, backoff * 2);
+    }
 }
 
 static class Focus

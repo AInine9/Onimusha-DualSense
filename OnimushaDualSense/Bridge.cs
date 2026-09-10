@@ -45,7 +45,7 @@ static class Bridge
             return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent });
 #endif
         }
-        using var hid = new Hid();
+        using var hid = new HidRecovery(new Hid(), () => new Hid(), Files.Log);
         Audio? audio = null;
         try
         {
@@ -73,7 +73,7 @@ static class Bridge
                     bool freshGame = (DateTime.UtcNow - File.GetLastWriteTimeUtc(statePath)).TotalSeconds < .75;
                     bool ack = false;
                     if (freshGame) try { ack = Files.Read(statePath)["legacy_suppressed"]?.GetValue<bool>() == true; } catch (Exception e) when (ReadableError(e)) { }
-                    hid.Send(Protocol.Report());
+                    hid.TrySend(Protocol.Report(), now);
                     audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, audio.OutputLatency);
                     Thread.Sleep(5); continue;
                 }
@@ -147,7 +147,7 @@ static class Bridge
                     int which = profiles[trigger]["_Which"]!.GetValue<int>();
                     if (which is 0 or 2) right = effect; if (which is 1 or 2) left = effect;
                 }
-                hid.Send(Protocol.Report(right, left, suppress));
+                hid.TrySend(Protocol.Report(right, left, suppress), now);
                 if (now - lastStatus > 2)
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
                         extended_audio_active = mixer.Playing, defense_kind = queue.DefenseKind, parry_plays = queue.ParryPlays,
@@ -167,7 +167,7 @@ static class Bridge
                 try { WriteControl(false); }
                 finally
                 {
-                    try { hid.Send(Protocol.Report(audio: false)); }
+                    try { hid.Release(); }
                     finally { Files.Atomic(Files.Data("status.json"), new { running = false }); Files.Log("Output stopped; both triggers released."); }
                 }
             }
