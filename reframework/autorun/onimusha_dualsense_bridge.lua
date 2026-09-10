@@ -32,7 +32,17 @@ local last_dump_event = -1
 local sound_pending, player_sound_object = {}, nil
 local contact_frame, defense_frame, sound_step_frame, sound_side = -1000, -1000, -1000, false
 local pre_suppress_until = -1
-local function sound_ready() return control and control.sound_events and next(control.sound_events)~=nil end
+local native_bow, bow_until, bow_owner = false, -1, nil
+local bow_counts = {starts=0,combat_releases=0,other_releases=0,blocked_steps=0,blocked_other=0}
+local bow_last_reason = 'none'
+local combat_families = {attack=true,hit=true,contact=true,guard=true,parry=true,
+    parry_release=true,deflect=true,damage=true,dodge=true,perfect_dodge=true,
+    finisher=true,power=true,special_motion=true}
+local sound_routes, routes_token, routes_retry = {}, nil, -1
+local function sound_ready() return next(sound_routes)~=nil end
+local trace_entries, trace_seq, trace_budget, trace_budget_frame, trace_dropped = {}, 0, 0, -1000, 0
+local trace_control_session, trace_ack_session, trace_ack = nil, nil, 0
+local last_defense_sample_frame = -1000
 local pad_type = sdk.find_type_definition('via.hid.GamePad')
 local function safe(f)
     local ok, value = pcall(f)
@@ -45,6 +55,36 @@ local function safe(f)
         return nil
     end
     return value
+end
+local function trace_sampled(kind)
+    return gameplay_allowed and (kind=='guard' or kind=='parry' or kind=='deflect' or frames-last_defense_sample_frame<=30)
+end
+local function trace_enabled(kind)
+    if not control or control.defense_trace~=true or control.output_enabled~=true or not trace_sampled(kind) then return false end
+    if type(control.timestamp)~='number' then return false end
+    local age=os.time()-control.timestamp
+    return age>=0 and age<=2
+end
+local function trace_available(kind)
+    if not trace_enabled(kind) then return false end
+    if frames-trace_budget_frame>=60 then trace_budget_frame=frames; trace_budget=0 end
+    return trace_budget<32
+end
+local function trace(reason, info)
+    safe(function()
+        local kind=info and info.kind or defense_kind
+        if not trace_enabled(kind) then return end
+        if frames-trace_budget_frame>=60 then trace_budget_frame=frames; trace_budget=0 end
+        if trace_budget>=32 then
+            trace_dropped=trace_dropped+1
+            return
+        end
+        trace_budget=trace_budget+1; trace_seq=trace_seq+1
+        local item={seq=trace_seq,frame=frames,reason=reason}
+        if info then for key,value in pairs(info) do item[key]=value end end
+        trace_entries[#trace_entries+1]=item
+        if #trace_entries>32 then table.remove(trace_entries,1); trace_dropped=trace_dropped+1 end
+    end)
 end
 local function set_native_suppression(wanted)
     local pad=sdk.get_native_singleton('via.hid.GamePad')
@@ -92,11 +132,43 @@ end
 local function same_object(a,b)
     return a and b and a:get_address()==b:get_address()
 end
-local function extra(id, minimum_frames, metadata)
+local function end_native_bow(reason, combat)
+    bow_owner=nil; bow_until=-1
+    if native_bow then
+        native_bow=false; bow_last_reason=reason
+        local counter=combat and 'combat_releases' or 'other_releases'
+        bow_counts[counter]=bow_counts[counter]+1
+        emit('native_bow',0,{reason=reason})
+    end
+end
+local function bow_charge_continues()
+    -- Stored timer/stage values may outlive a charge. They can only extend a
+    -- session opened by a real local start/effect callback, never create one.
+    local subweapon=bow_owner and gameplay_allowed and player_entity and player_entity:call('get_SubWeapon') or nil
+    if not same_object(subweapon,bow_owner) then return false end
+    local timer=subweapon:get_field('_TimerCharge')
+    local inner=timer and timer:get_field('_Timer')
+    local stage=subweapon:call('getStrongShotType')
+    return stage==1 or stage==2 or (inner~=nil and timer:call('get_Enabled')==true)
+end
+local function extra(id, minimum_frames, metadata, family)
     if not enabled then return end
     local is_ui = id:sub(1,3)=='ui_'
     if is_ui then if not ui_allowed then return end
     elseif not gameplay_allowed then return end
+    -- An authenticated combat event takes precedence over stale bow fields.
+    -- Cancel the session too, so LateUpdate cannot re-arm it from those fields.
+    if native_bow and combat_families[family or id] then
+        end_native_bow('event:'..(family or id),true)
+    elseif native_bow and frames>bow_until and not bow_charge_continues() then
+        end_native_bow('charge_finished',false)
+    end
+    if native_bow then
+        local step=family=='footsteps' or id:match('^foot_') or id:match('^run_')
+        local counter=step and 'blocked_steps' or 'blocked_other'
+        bow_counts[counter]=bow_counts[counter]+1
+        return
+    end
     if frames-(extra_last[id] or -1000)<(minimum_frames or 4) then return end
     if id=='attack' or id=='hit' or id=='damage' or id=='guard' or id=='finisher' then combat_frame=frames end
     extra_last[id]=frames
@@ -120,6 +192,20 @@ local function extra_hook(type_name,method_name,callback)
 end
 -- Hooks only observe existing game events. They never call an action, change game state,
 -- or synthesize feedback from raw controller input.
+local function preserve_bow(args)
+    if not gameplay_allowed or not player_entity then return end
+    local subweapon=sdk.to_managed_object(args[2])
+    if not same_object(subweapon,player_entity:call('get_SubWeapon')) then return end
+    bow_owner=subweapon; bow_until=frames
+    if not native_bow then
+        native_bow=true; bow_counts.starts=bow_counts.starts+1; bow_last_reason='charge_callback'
+        emit('native_bow',1,{reason=bow_last_reason})
+    end
+    pre_suppress_until=-1; sound_pending={}
+    set_native_suppression(false)
+end
+extra_hook('app.cPlayerSubWeaponSupporter','startStrongShot',preserve_bow)
+extra_hook('app.cPlayerSubWeaponSupporter','requestEffectStrongShot',preserve_bow)
 extra_hook('app.EPVExpertFootLandingCustom','play',function(args)
     if sound_ready() then return end
     local owner=sdk.to_managed_object(args[2])
@@ -144,10 +230,12 @@ extra_hook('app.CharacterBase','evBaseActionEnter',function(args)
     end
 end)
 extra_hook('app.cPlayerCharacterEntity','evAttackCollision',function(args)
-    if not entity_is_player(args) or sound_ready() then return end
+    if not entity_is_player(args) or (sound_ready() and not native_bow) then return end
     local track=sdk.to_managed_object(args[3])
     if not track then return end
     if not track:call('get_IsOn') then return end
+    end_native_bow('attack_collision',true)
+    if sound_ready() then return end
     local parameter=tostring(track:call('get_AttackParamID'))..':'..tostring(track:call('get_RequestSetID'))
     if not attack_params[parameter] then
         attack_params[parameter]=true
@@ -162,11 +250,14 @@ extra_hook('app.cPlayerCharacterEntity','onHitAttackPostProcess',function(args)
     if hit_ids[key] and frames-hit_ids[key]<120 then return end
     hit_ids[key]=frames
     for id,frame in pairs(hit_ids) do if frames-frame>120 then hit_ids[id]=nil end end
+    end_native_bow('player_hit',true)
     contact_frame=frames; combat_frame=frames
     if not sound_ready() then extra('hit',3) end
 end)
 extra_hook('app.cPlayerGuardController','addDamage',function(args)
     if module_is_player(args) then
+        trace('guard_contact',{route='addDamage',family='guard',expected_source='player',observed_source='player',kind=defense_kind,bits=defense_state})
+        end_native_bow('guard_contact',true)
         defense_frame=frames; combat_frame=frames
         if not sound_ready() then extra('guard',4) end
     end
@@ -205,47 +296,95 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
     if not sound_ready() then return end
     local info=sdk.to_managed_object(args[2]) -- static method, first managed parameter
     if not info then return end
+    local event_id=tostring(info:call('get_EventId'))
+    local route=sound_routes[event_id]
+    if not route and player_sound_object then
+        if trace_enabled(defense_kind) then
+            if trace_available(defense_kind) then
+                local ok,unknown_src=pcall(function() return info:call('get_SrcGameObj') end)
+                local unknown_name=nil
+                if ok and unknown_src then ok,unknown_name=pcall(function() return unknown_src:call('get_Name') end) end
+                trace(ok and unknown_name and 'unregistered' or 'trace_error',{event_id=event_id,route='unregistered',family='unknown',expected_source='unknown',observed_source=(ok and unknown_name) or 'diagnostic_accessor_failed',bits=defense_state,kind=defense_kind})
+            else trace_dropped=trace_dropped+1 end
+        end
+        return
+    end
     local src=info:call('get_SrcGameObj')
-    if not src then return end
+    if not src then
+        if route then
+            trace('missing_source',{event_id=event_id,route=route.id,family=route.family,expected_source=route.source,observed_source='missing_source',bits=defense_state,kind=defense_kind})
+        elseif trace_available(defense_kind) then
+            trace('missing_source',{event_id=event_id,route='unregistered',family='unknown',expected_source='unknown',observed_source='missing_source',bits=defense_state,kind=defense_kind})
+        elseif trace_enabled(defense_kind) then
+            trace_dropped=trace_dropped+1
+        end
+        return
+    end
     local name=src:call('get_Name')
     if name=='Player_00' then player_sound_object=src end
-    local route=control.sound_events[tostring(info:call('get_EventId'))]
-    if not route then return end
+    if not route then
+        if trace_enabled(defense_kind) then
+            if trace_available(defense_kind) then trace('unregistered',{event_id=event_id,route='unregistered',family='unknown',expected_source='unknown',observed_source=name,bits=defense_state,kind=defense_kind}) else trace_dropped=trace_dropped+1 end
+        end
+        return
+    end
     if route.source=='GUI' then
-        if name=='GUI' then extra(route.id,3) end
+        if name=='GUI' then extra(route.id,3,nil,route.family) end
         return
     end
     if not gameplay_allowed then return end
     local technique=special_context()
     if route.family=='special_motion' and technique=='none' then return end
     if route.source=='parry_pos' then
-        if name~='parry_pos' or not player_character or not player_sound_object then return end
+        if name~='parry_pos' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
+        if not player_character or not player_sound_object then trace('missing_player',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
         local a=src:call('get_Transform'):call('get_Position')
         local b=player_sound_object:call('get_Transform'):call('get_Position')
-        if (a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2>16 then return end
-        local kind=classify_defense(player_character:call('getActionState'))
-        if route.family=='parry_stop' then emit('defense_stop',route.stops); return end
-        if route.family=='parry' and kind~='parry' then return end
-        if route.family=='deflect' and kind~='deflect' then return end
+        local distance=(a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2
+        if distance>16 then trace('out_of_range',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,distance_squared=distance,bits=defense_state,kind=defense_kind}); return end
+        local bits=player_character:call('getActionState')
+        local kind=classify_defense(bits)
+        if route.family=='parry_stop' then trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind}); emit('defense_stop',route.stops); return end
+        if route.family=='parry' and kind~='parry' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind}); return end
+        if route.family=='deflect' and kind~='deflect' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind}); return end
         -- Release sounds can arrive after the action bit clears; the positional
         -- event itself is the verified Wwise release, not an inferred guard.
-        if route.family=='parry_release' and kind=='dodge' then return end
+        if route.family=='parry_release' and kind=='dodge' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind}); return end
         defense_frame=frames; combat_frame=frames
-        extra(route.id,1,{switches=request_switches(info),defense_kind=kind})
+        trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind})
+        extra(route.id,1,{switches=request_switches(info),defense_kind=kind},route.family)
         return
     end
-    if route.source=='player' and name~='Player_00' then return end
-    if route.source=='player_effect' and name~='effect_Player_00' then return end
+    if route.source=='player' and name~='Player_00' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='Player_00',observed_source=name,bits=defense_state,kind=defense_kind}); return end
+    if route.source=='player_effect' and name~='effect_Player_00' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='effect_Player_00',observed_source=name,bits=defense_state,kind=defense_kind}); return end
     if route.source=='TrgPos' then
-        if name~='TrgPos' or not player_sound_object then return end
-        local a=src:call('get_Transform'):call('get_Position')
-        local b=player_sound_object:call('get_Transform'):call('get_Position')
-        if (a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2>16 then return end
-        if technique~='none' then
-            extra(route.id,1,{switches=request_switches(info),technique=technique}); combat_frame=frames
+        -- Some contact banks reuse parry_pos for the defense impact. Require
+        -- every observed gate; never synthesize haptic feedback from state alone.
+        if route.family=='contact' and name=='parry_pos' then
+            if not player_character or not player_sound_object then trace('missing_player',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
+            local a=src:call('get_Transform'):call('get_Position')
+            local b=player_sound_object:call('get_Transform'):call('get_Position')
+            local distance=(a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2
+            if distance>16 then trace('out_of_range',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,distance_squared=distance,bits=defense_state,kind=defense_kind}); return end
+            local bits=player_character:call('getActionState')
+            local kind=classify_defense(bits)
+            if kind~='parry' and kind~='deflect' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=bits,kind=kind}); return end
+            trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=bits,kind=kind})
+            extra(route.id,1,{switches=request_switches(info),defense_kind=kind},route.family); defense_frame=frames; combat_frame=frames
             return
         end
-        sound_pending[#sound_pending+1]={id=route.id,frame=frames,switches=request_switches(info)}
+        if name~='TrgPos' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
+        if not player_sound_object then trace('missing_player',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
+        local a=src:call('get_Transform'):call('get_Position')
+        local b=player_sound_object:call('get_Transform'):call('get_Position')
+        local distance=(a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2
+        if distance>16 then trace('out_of_range',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,distance_squared=distance,bits=defense_state,kind=defense_kind}); return end
+        if technique~='none' then
+            trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); extra(route.id,1,{switches=request_switches(info),technique=technique},route.family); combat_frame=frames
+            return
+        end
+        trace('deferred',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind})
+        sound_pending[#sound_pending+1]={id=route.id,frame=frames,switches=request_switches(info),family=route.family}
         if #sound_pending>16 then table.remove(sound_pending,1) end
         return
     end
@@ -253,12 +392,12 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
         if not player_entity or player_entity:call('getCurrentActionMoveType')<0 then return end
         if frames-combat_frame<18 or frames-sound_step_frame<8 then return end
         sound_step_frame=frames; sound_side=not sound_side
-        extra(route.id..(sound_side and '_left' or '_right'),1,{switches=request_switches(info)})
+        extra(route.id..(sound_side and '_left' or '_right'),1,{switches=request_switches(info)},route.family)
     elseif route.family=='guard' then
-        defense_frame=frames; combat_frame=frames; extra(route.id,3,{switches=request_switches(info)})
+        trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source=route.source,observed_source=name,bits=defense_state,kind=defense_kind}); defense_frame=frames; combat_frame=frames; extra(route.id,3,{switches=request_switches(info)},route.family)
     else
         if route.family=='attack' then combat_frame=frames end
-        extra(route.id,technique~='none' and 1 or 4,{switches=request_switches(info),technique=technique})
+        extra(route.id,technique~='none' and 1 or 4,{switches=request_switches(info),technique=technique},route.family)
     end
 end)
 local gui_type='ace.GUIBase`2<app.GUIID.ID,app.UIKey.TYPE>'
@@ -288,9 +427,37 @@ re.on_application_entry('LateUpdateBehavior', function()
     safe(function()
         local ok,value=pcall(json.load_file,'onimusha_dualsense_control.json')
         if ok and value then control=value end
-        local age=control and control.timestamp and os.time()-control.timestamp or 100
-        set_native_suppression(enabled and control and age>=0 and age<=2 and
-            (control.suppress_legacy==true or (control.output_enabled==true and frames<=pre_suppress_until)))
+        if control then
+            if control.routes_token then
+                if routes_token~=control.routes_token and frames>=routes_retry then
+                    routes_retry=frames+60
+                    local loaded,data=pcall(json.load_file,'onimusha_dualsense_routes.json')
+                    if loaded and data and data.token==control.routes_token and type(data.sound_events)=='table' then
+                        sound_routes=data.sound_events; routes_token=data.token
+                    end
+                end
+            elseif control.sound_events then sound_routes=control.sound_events end
+            if control.trace_session~=trace_control_session then
+                trace_control_session=control.trace_session; trace_ack_session=nil; trace_ack=0
+            end
+            -- A trace ACK is valid only after the companion has observed this
+            -- Lua session. A stale ACK from a previous reload must not evict
+            -- newly captured rows.
+            if control.trace_lua_session==session then
+                trace_ack_session=session
+                if type(control.trace_ack)=='number' and control.trace_ack>trace_ack then
+                    trace_ack=control.trace_ack
+                    local remaining={}
+                    for _,item in ipairs(trace_entries) do if item.seq>trace_ack then remaining[#remaining+1]=item end end
+                    trace_entries=remaining
+                end
+            end
+            if control.ack_session==session and type(control.ack_event)=='number' then
+                local remaining={}
+                for _,event in ipairs(events) do if event.seq>control.ack_event then remaining[#remaining+1]=event end end
+                events=remaining
+            end
+        end
     end)
     safe(function()
         local vm = sdk.get_managed_singleton('app.AppPadVibrationManager')
@@ -317,10 +484,24 @@ re.on_application_entry('LateUpdateBehavior', function()
         if gameplay_allowed then
             local current=player_character:call('getActionState')
             defense_state=current; defense_kind=classify_defense(current)
+            if defense_kind=='guard' or defense_kind=='parry' or defense_kind=='deflect' then last_defense_sample_frame=frames end
+            if defense_kind~=(previous_state and classify_defense(previous_state) or 'none') then
+                trace('state_transition',{route='state',family='defense',expected_source='player',observed_source='player',bits=current,kind=defense_kind})
+            end
             if same_object(previous_player,player_character) and previous_state and
                 (previous_state & 4)~=0 and (current & 4)==0 and (current & 1)~=0 then extra('land',10) end
             previous_state=current; previous_player=player_character
         else previous_state=nil; previous_player=nil; attack_params={} end
+    end)
+    safe(function()
+        if not gameplay_allowed then end_native_bow('inactive',false)
+        elseif defense_kind~='none' then end_native_bow('defense:'..defense_kind,true)
+        elseif native_bow and frames>bow_until and not bow_charge_continues() then
+            end_native_bow('charge_finished',false)
+        end
+        -- Keep deferred positional sounds for their existing three-frame matching
+        -- window. Bow protection must not erase a contact before its hit arrives.
+        if native_bow then pre_suppress_until=-1 end
     end)
     safe(function()
         if gameplay_allowed then
@@ -328,25 +509,29 @@ re.on_application_entry('LateUpdateBehavior', function()
                 local request=sound_pending[i]
                 if frames-request.frame>3 then table.remove(sound_pending,i)
                 elseif math.abs(request.frame-contact_frame)<=3 or math.abs(request.frame-defense_frame)<=3 then
-                    extra(request.id,3,{switches=request.switches}); combat_frame=frames; table.remove(sound_pending,i)
+                    extra(request.id,3,{switches=request.switches},request.family); combat_frame=frames; table.remove(sound_pending,i)
                 end
             end
         else sound_pending={}; player_sound_object=nil end
         local age=control and control.timestamp and os.time()-control.timestamp or 100
-        if enabled and control and control.output_enabled==true and age>=0 and age<=2 and frames<=pre_suppress_until then
-            set_native_suppression(true)
-        end
+        set_native_suppression(not native_bow and enabled and control and age>=0 and age<=2 and
+            (control.suppress_legacy==true or (control.output_enabled==true and frames<=pre_suppress_until)))
     end)
     -- Publish new events on the next update; keep a lower-rate idle heartbeat.
     if event_id~=last_dump_event or frames % 2 == 0 then
         last_dump_event=event_id
         sequence=sequence+1
-        safe(function() json.dump_file(path, {version=3,session=session,seq=sequence,frame=frames,
+        safe(function()
+            local snapshot={version=3,session=session,seq=sequence,frame=frames,
             enabled=enabled,paused=paused,trigger=candidate,events=events,counters=counters,errors=errors,
-            ui_allowed=ui_allowed,gameplay_allowed=gameplay_allowed,
+            ui_allowed=ui_allowed,gameplay_allowed=gameplay_allowed,native_bow=native_bow,
             defense_kind=defense_kind,defense_state=defense_state,
+            bow_counts=bow_counts,bow_last_reason=bow_last_reason,
             extended_counts=extra_counts,extended_hooks=extra_hooks,
-            legacy_suppressed=suppressed,native_feedback=native_feedback}) end)
+            legacy_suppressed=suppressed,native_feedback=native_feedback}
+            if trace_enabled(defense_kind) then snapshot.defense_trace=trace_entries; snapshot.defense_trace_dropped=trace_dropped end
+            json.dump_file(path,snapshot)
+        end)
     end
 end)
 re.on_draw_ui(function()

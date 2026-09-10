@@ -24,9 +24,27 @@ static class Bridge
         var effects = profiles.ToDictionary(p => p.Key, p => Protocol.Feedback(p.Value["_PowerList"]!.AsArray().Select(n => n!.GetValue<float>()).ToArray()));
         var mixer = new Mixer(samples, config.Gain);
         var queue = new FeedbackQueue(mixer, extensions, Files.Log);
-        var routes = JsonSerializer.SerializeToElement(extensions.SoundEvents);
+        var inbox = new Inbox();
+        var reader = new ChangedJsonReader();
+        string routesToken = Guid.NewGuid().ToString("N");
+        string routesPath = Path.Combine(config.Game, "reframework/data/onimusha_dualsense_routes.json");
+        if (!Files.Atomic(routesPath, new { token = routesToken, sound_events = extensions.SoundEvents }))
+            throw new IOException("Cannot publish sound routes");
         bool outputEnabled = false;
-        bool WriteControl(bool suppress) => Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, sound_events = routes });
+#if DEVELOPER
+        var defenseTrace = new DefenseTrace();
+#endif
+        bool WriteControl(bool suppress)
+        {
+#if DEVELOPER
+            // `trace_lua_session` scopes the trace ACK to the exact Lua
+            // lifetime that produced the rows. A companion restart alone must
+            // never acknowledge rows from a later script reload.
+            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent, defense_trace = true, trace_session = defenseTrace.Session, trace_lua_session = defenseTrace.LuaSession, trace_ack = defenseTrace.LastSeq });
+#else
+            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent });
+#endif
+        }
         using var hid = new Hid();
         Audio? audio = null;
         try
@@ -36,7 +54,7 @@ static class Bridge
 #if DEVELOPER
             using var audition = new Audition();
 #endif
-            var inbox = new Inbox(); var lifetime = new GameLifetime();
+            var lifetime = new GameLifetime();
             JsonNode? state = null; Accepted? last = null;
             double began = Files.Now, nextProcess = 0, lastStatus = 0, lastControl = began, controlAttempt = double.NegativeInfinity;
             int lastTrigger = int.MinValue;
@@ -70,10 +88,14 @@ static class Bridge
                 {
                     if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(statePath)).TotalSeconds < .75)
                     {
-                        var next = Files.Read(statePath); var accepted = inbox.Accept(next, now);
+                        var next = reader.ReadChanged(statePath); var accepted = next == null ? null : inbox.Accept(next, now);
                         if (accepted != null)
                         {
-                            state = next; last = accepted;
+                            state = next!; last = accepted;
+#if DEVELOPER
+                            defenseTrace.Consume(state);
+#endif
+                            queue.SetNativeBow(focus && accepted.NativeBow);
                             queue.SetDefense(focus && accepted.Active && state["gameplay_allowed"]?.GetValue<bool>() == true
                                 ? state["defense_kind"]?.GetValue<string>() ?? "none" : "none", now);
                             if (focus && config.Gain > 0)
@@ -90,7 +112,7 @@ static class Bridge
                                         if (allowed)
                                         {
                                             if (ev["defense_kind"] is JsonNode defense) queue.SetDefense(defense.GetValue<string>(), now);
-                                            queue.Extended(id, ev["seq"]!.GetValue<long>(), ev["frame"]!.GetValue<long>(), now, ev["switches"], ev["technique"]?.GetValue<string>() ?? "");
+                                            queue.Extended(id, ev["seq"]!.GetValue<long>(), ev["frame"]!.GetValue<long>(), now, ev["switches"], ev["technique"]?.GetValue<string>() ?? "", ev["defense_kind"]?.GetValue<string>());
                                         }
                                     }
                                 }
@@ -101,10 +123,11 @@ static class Bridge
                 bool active = last != null && now - inbox.Last < .75 && last.Active && focus;
                 bool uiAllowed = last != null && now - inbox.Last < .75 && last.UiAllowed && focus;
                 bool gameplay = active && state?["gameplay_allowed"]?.GetValue<bool>() == true;
+                queue.SetNativeBow(gameplay && last!.NativeBow);
                 int trigger = active ? last!.Trigger : -1;
                 outputEnabled = config.Gain > 0 && (active || uiAllowed);
                 queue.SetDefense(gameplay ? state?["defense_kind"]?.GetValue<string>() ?? "none" : "none", now);
-                queue.SetActivity(config.Gain > 0 && active, config.Gain > 0 && uiAllowed);
+                queue.SetActivity(config.Gain > 0 && gameplay, config.Gain > 0 && uiAllowed);
                 queue.Dispatch(state?["legacy_suppressed"]?.GetValue<bool>() == true, now);
                 bool suppress = queue.RequiresSuppression(gameplay, uiAllowed, now);
                 if ((suppress != lastSuppress || now - lastControl > .2) && now - controlAttempt >= .05)

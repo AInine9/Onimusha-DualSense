@@ -41,6 +41,22 @@ static class Files
     }
 }
 
+sealed class ChangedJsonReader
+{
+    (DateTime Time, long Length)? previous;
+    public JsonNode? ReadChanged(string path)
+    {
+        var info = new FileInfo(path);
+        var stamp = (info.LastWriteTimeUtc, info.Length);
+        if (previous == stamp) return null;
+        var value = Files.Read(path);
+        info.Refresh();
+        if (stamp != (info.LastWriteTimeUtc, info.Length)) return null;
+        previous = stamp; // A failed or partial read must remain retryable.
+        return value;
+    }
+}
+
 sealed class GameLifetime
 {
     public bool Seen { get; private set; }
@@ -80,12 +96,13 @@ static class Protocol
     }
 }
 
-record Accepted(int Trigger, JsonNode[] Events, bool Active, bool UiAllowed = false);
+record Accepted(int Trigger, JsonNode[] Events, bool Active, bool UiAllowed = false, bool NativeBow = false);
 sealed class Inbox
 {
     public string? Session;
     public double Last;
     long seq = -1, lastEvent;
+    public long LastEvent => lastEvent;
     public Accepted? Accept(JsonNode state, double now)
     {
         int version = state["version"]!.GetValue<int>();
@@ -97,15 +114,16 @@ sealed class Inbox
         // Validate the complete message before committing its sequence.
         bool enabled = state["enabled"]!.GetValue<bool>();
         bool active = enabled && !state["paused"]!.GetValue<bool>();
+        bool nativeBow = active && state["native_bow"]?.GetValue<bool>() == true;
         bool uiAllowed = enabled && version == 3 && state["ui_allowed"]?.GetValue<bool>() == true;
         long frame = state["frame"]!.GetValue<long>();
         var events = state["events"]?.AsArray().Where(e => e!["seq"]!.GetValue<long>() > lastEvent).Select(e => e!).ToArray() ?? [];
         var fresh = events.Where(e => frame - e["frame"]!.GetValue<long>() is >= 0 and <= 8 &&
-            (active || (uiAllowed && e["kind"]?.ToString() == "extended" && e["id"]?.ToString().StartsWith("ui_", StringComparison.Ordinal) == true) || e["kind"]?.ToString() == "stop")).ToArray();
+            ((active && !nativeBow) || (!nativeBow && uiAllowed && e["kind"]?.ToString() == "extended" && e["id"]?.ToString().StartsWith("ui_", StringComparison.Ordinal) == true) || e["kind"]?.ToString() == "stop")).ToArray();
         int trigger = active ? state["trigger"]?.GetValue<int>() ?? -1 : -1;
         seq = next; Last = now;
         if (events.Length > 0) lastEvent = events.Max(e => e["seq"]!.GetValue<long>());
-        return new(trigger, fresh, active && version >= 2, uiAllowed);
+        return new(trigger, fresh, active && version >= 2, uiAllowed, nativeBow);
     }
 }
 

@@ -7,6 +7,19 @@ namespace OnimushaDualSense;
 sealed class Hid : IDisposable
 {
     readonly SafeFileHandle handle;
+    readonly int reportLength;
+    public record Device(string Path, ushort Product, int ReportLength)
+    {
+        public string Model => Product == 0x0df2 ? "DualSense Edge" : "DualSense";
+    }
+    public static bool Supported(ushort vendor, ushort product, int usage, int page, int length) =>
+        vendor == 0x054c && product is 0x0ce6 or 0x0df2 && usage == 5 && page == 1 && length is >= 48 and <= 64;
+    public static byte[] PadReport(byte[] report, int length)
+    {
+        if (report.Length != 48 || length is < 48 or > 64) throw new InvalidDataException("Unsupported USB report length");
+        if (length == report.Length) return report;
+        var padded = new byte[length]; report.CopyTo(padded, 0); return padded;
+    }
     [StructLayout(LayoutKind.Sequential)] struct InterfaceData { public uint Size; public Guid ClassGuid; public uint Flags; public nint Reserved; }
     [StructLayout(LayoutKind.Sequential)] struct Attributes { public int Size; public ushort Vendor, Product, Version; }
     [DllImport("hid.dll")] static extern void HidD_GetHidGuid(out Guid guid);
@@ -20,11 +33,11 @@ sealed class Hid : IDisposable
     [DllImport("setupapi.dll")] static extern bool SetupDiDestroyDeviceInfoList(nint info);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFileW(string path, uint access, uint share, nint security, uint disposition, uint flags, nint template);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool WriteFile(SafeFileHandle handle, byte[] data, uint size, out uint written, nint overlapped);
-    public static List<string> Find()
+    public static List<Device> Find()
     {
         HidD_GetHidGuid(out var guid); nint info = SetupDiGetClassDevsW(ref guid, 0, 0, 0x12);
         if (info == -1) throw new Win32Exception();
-        var found = new List<string>();
+        var found = new List<Device>();
         try
         {
             for (uint i = 0; ; i++)
@@ -48,7 +61,9 @@ sealed class Hid : IDisposable
                     nint caps = Marshal.AllocHGlobal(64);
                     try
                     {
-                        if (HidP_GetCaps(preparsed, caps) == 0x110000 && Marshal.ReadInt16(caps, 0) == 5 && Marshal.ReadInt16(caps, 2) == 1 && Marshal.ReadInt16(caps, 6) == 48) found.Add(path);
+                        if (HidP_GetCaps(preparsed, caps) == 0x110000 && Supported(attr.Vendor, attr.Product,
+                            Marshal.ReadInt16(caps, 0), Marshal.ReadInt16(caps, 2), Marshal.ReadInt16(caps, 6)))
+                            found.Add(new(path, attr.Product, Marshal.ReadInt16(caps, 6)));
                     }
                     finally { Marshal.FreeHGlobal(caps); HidD_FreePreparsedData(preparsed); }
                 }
@@ -61,11 +76,14 @@ sealed class Hid : IDisposable
     public Hid()
     {
         var paths = Find(); if (paths.Count != 1) throw new InvalidOperationException($"Expected one USB DualSense HID; found {paths.Count}");
-        handle = CreateFileW(paths[0], 0x40000000, 3, 0, 3, 0, 0);
+        reportLength = paths[0].ReportLength;
+        handle = CreateFileW(paths[0].Path, 0x40000000, 3, 0, 3, 0, 0);
         if (handle.IsInvalid) throw new Win32Exception();
+        Files.Log($"USB controller: {paths[0].Model}; PID={paths[0].Product:x4}; output report={reportLength} bytes.");
     }
     public void Send(byte[] report)
     {
+        report = PadReport(report, reportLength);
         if (!WriteFile(handle, report, (uint)report.Length, out uint count, 0) || count != report.Length) throw new Win32Exception(Marshal.GetLastWin32Error(), "USB HID write failed");
     }
     public void Dispose() => handle.Dispose();
@@ -73,11 +91,22 @@ sealed class Hid : IDisposable
 
 static class Focus
 {
+    static uint cachedPid;
+    static double expires;
+    static bool cachedResult;
     [DllImport("user32.dll")] static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     public static bool IsGame()
     {
-        try { GetWindowThreadProcessId(GetForegroundWindow(), out uint pid); using var process = System.Diagnostics.Process.GetProcessById((int)pid); return process.ProcessName.Equals("OnimushaWotS", StringComparison.OrdinalIgnoreCase); }
+        try
+        {
+            GetWindowThreadProcessId(GetForegroundWindow(), out uint pid);
+            double now = Files.Now;
+            if (pid == cachedPid && now < expires) return cachedResult;
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            cachedResult = process.ProcessName.Equals("OnimushaWotS", StringComparison.OrdinalIgnoreCase);
+            cachedPid = pid; expires = now + 1; return cachedResult;
+        }
         catch { return false; }
     }
 }
