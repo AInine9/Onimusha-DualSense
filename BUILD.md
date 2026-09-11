@@ -2,10 +2,18 @@
 
 Use Windows x64 and the .NET 10 SDK. Run these commands from the source root.
 
-## Quick build
+## Build from source
 
 ```powershell
+dotnet restore OnimushaDualSense --configfile NuGet.Config
 dotnet publish OnimushaDualSense -c Release -o publish --configfile NuGet.Config
+```
+
+The commands above use the .NET SDK installed on your machine and create a Windows x64 runtime in `publish`.
+
+## Package a build
+
+```powershell
 ./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory github-release
 ./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory nexus-release -NexusMod
 ```
