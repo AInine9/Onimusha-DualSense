@@ -59,7 +59,7 @@ static class Setup
         {
             Console.WriteLine("Downloading official tool: " + tool.Url);
             using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Onimusha-DualSense-Setup/1.1.1");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Onimusha-DualSense-Setup/1.1.2");
             string temp = path + ".download";
             using (var response = client.GetAsync(tool.Url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult())
             {
