@@ -5,6 +5,12 @@ namespace OnimushaDualSense;
 
 static class Bridge
 {
+    // A bounded polling interval that trims idle CPU/USB traffic while keeping companion latency low.
+    const int CompanionLoopSleepMilliseconds = 8;
+    // Keep a margin below the one-second freshness watchdog when a write is delayed.
+    const double ControlHeartbeatSeconds = .5;
+    const double ControlWatchdogSeconds = 1.0;
+
     public static int Run(string[] args)
     {
         using var mutex = new Mutex(false, @"Local\OnimushaDualSenseBridge", out bool created);
@@ -21,7 +27,8 @@ static class Bridge
         using var samples = prepared.Samples;
         var extensions = prepared.Effects; SampleStore.FinishLoading();
         var profiles = Files.Read(Files.Data("trigger_profiles.json"))["profiles"]!.AsArray().ToDictionary(p => p!["_Type"]!.GetValue<int>(), p => p!);
-        var effects = profiles.ToDictionary(p => p.Key, p => Protocol.Feedback(p.Value["_PowerList"]!.AsArray().Select(n => n!.GetValue<float>()).ToArray()));
+        var effects = profiles.ToDictionary(p => p.Key, p => Protocol.Feedback(
+            p.Value["_PowerList"]!.AsArray().Select(n => n!.GetValue<float>()).ToArray(), config.AdaptiveTriggerStrength));
         var mixer = new Mixer(samples, config.Gain);
         var queue = new FeedbackQueue(mixer, extensions, Files.Log);
         var inbox = new Inbox();
@@ -68,14 +75,14 @@ static class Bridge
                 if (audition.Active)
                 {
                     outputEnabled = false;
-                    if (lastSuppress != true || now - lastControl > .2)
+                    if (lastSuppress != true || now - lastControl > ControlHeartbeatSeconds)
                         if (WriteControl(true)) { lastSuppress = true; lastControl = now; }
                     bool freshGame = (DateTime.UtcNow - File.GetLastWriteTimeUtc(statePath)).TotalSeconds < .75;
                     bool ack = false;
                     if (freshGame) try { ack = Files.Read(statePath)["legacy_suppressed"]?.GetValue<bool>() == true; } catch (Exception e) when (ReadableError(e)) { }
                     hid.TrySend(Protocol.Report(), now);
                     audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, audio.OutputLatency);
-                    Thread.Sleep(5); continue;
+                    Thread.Sleep(CompanionLoopSleepMilliseconds); continue;
                 }
 #endif
                 if (now >= nextProcess)
@@ -130,7 +137,7 @@ static class Bridge
                 queue.SetActivity(config.Gain > 0 && gameplay, config.Gain > 0 && uiAllowed);
                 queue.Dispatch(state?["legacy_suppressed"]?.GetValue<bool>() == true, now);
                 bool suppress = queue.RequiresSuppression(gameplay, uiAllowed, now);
-                if ((suppress != lastSuppress || now - lastControl > .2) && now - controlAttempt >= .05)
+                if ((suppress != lastSuppress || now - lastControl > ControlHeartbeatSeconds) && now - controlAttempt >= .05)
                 {
                     controlAttempt = now;
                     if (WriteControl(suppress))
@@ -139,7 +146,7 @@ static class Bridge
                         lastControl = now; lastSuppress = suppress;
                     }
                 }
-                if (now - lastControl > 1) { queue.Clear(); active = false; trigger = -1; suppress = false; }
+                if (now - lastControl > ControlWatchdogSeconds) { queue.Clear(); active = false; trigger = -1; suppress = false; }
                 if (trigger != lastTrigger) { Files.Log($"Trigger={trigger}; active={active}"); lastTrigger = trigger; }
                 byte[] right = Protocol.Off, left = Protocol.Off;
                 if (config.AdaptiveTriggers && effects.TryGetValue(trigger, out var effect))
@@ -154,7 +161,7 @@ static class Bridge
                         skipped_extensions = queue.Skipped, suppression_requested = suppress, sound_reference_events = extensions.SoundEvents.Count,
                         audio_underflows = audio.Underflows, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
                 if (seconds > 0 && now - began >= seconds) break;
-                Thread.Sleep(5);
+                Thread.Sleep(CompanionLoopSleepMilliseconds);
             }
             return 0;
         }

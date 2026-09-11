@@ -2,5 +2,6 @@
   "game": "",
   "gain": 1.0,
   "adaptive_triggers": true,
+  "adaptive_trigger_strength": 1.0,
   "auto_launch_game": true
 }

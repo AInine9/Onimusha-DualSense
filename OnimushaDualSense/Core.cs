@@ -73,15 +73,16 @@ sealed class GameLifetime
 static class Protocol
 {
     public static readonly byte[] Off = [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    public static byte[] Feedback(float[] powers)
+    public static byte[] Feedback(float[] powers, float strengthMultiplier = 1)
     {
         if (powers.Length != 10) throw new InvalidDataException("Expected ten trigger zones");
+        if (!float.IsFinite(strengthMultiplier) || strengthMultiplier < 0 || strengthMultiplier > 1) throw new InvalidDataException("Invalid trigger strength multiplier");
         uint mask = 0, packed = 0;
         for (int i = 0; i < 10; i++)
         {
             float p = powers[i];
             if (!float.IsFinite(p) || p < 0 || p > 1) throw new InvalidDataException("Invalid trigger strength");
-            int strength = Math.Min(8, (int)(p * 8 + .5));
+            int strength = Math.Min(8, (int)(p * strengthMultiplier * 8 + .5));
             if (strength > 0) { mask |= 1u << i; packed |= (uint)(strength - 1) << (i * 3); }
         }
         if (mask == 0) return Off;
