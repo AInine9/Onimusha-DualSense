@@ -16,7 +16,7 @@ foreach ($name in @('libportaudio64bit.dll','defense_haptics.json')) {
     Copy-Item -LiteralPath (Join-Path $project ('distribution/' + $name)) -Destination $bin
 }
 Copy-Item -LiteralPath (Join-Path $project 'reframework/autorun/onimusha_dualsense_bridge.lua') -Destination $bin
-foreach ($name in @('README.md','LICENSE','THIRD_PARTY_NOTICES.txt','config.json')) {
+foreach ($name in @('LICENSE','THIRD_PARTY_NOTICES.txt','config.json')) {
     Copy-Item -LiteralPath (Join-Path $project ('distribution/' + $name)) -Destination $release
 }
 
