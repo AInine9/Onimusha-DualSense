@@ -6,6 +6,7 @@ local session = tostring(os.time()) .. ':' .. tostring(os.clock())
 local counters = {adaptive=0, bow=0, spawner=0}
 local original_feedback, native_feedback = nil, nil
 local control, suppressed = nil, false
+local control_read_interval, last_control_read = 3, -1000
 local gameplay_allowed, ui_allowed = false, false
 local defense_kind, defense_state = 'none', 0
 local function classify_defense(bits)
@@ -22,13 +23,20 @@ local function special_context()
     if not player_entity or not player_character then return 'none' end
     local bits=player_character:call('getActionState')
     if (bits & 524288)==0 then special_kind='none'; special_frame=-1000; return 'none' end
-    if player_entity:call('isDeadHeatAction') then return 'deadheat' end
+    -- Do not invoke app.cPlayerCharacterEntity.isDeadHeatAction here. The
+    -- live game raised an access violation from that native call. Dead-heat
+    -- state is marked by the observed impact callback below instead.
+    if special_kind=='deadheat' and frames-special_frame<=600 then return 'deadheat' end
     if special_kind=='issen' and frames-special_frame<=600 then return 'issen' end
     return 'none'
 end
 local extra_counts, extra_hooks, extra_last = {}, {}, {}
 local attack_params, hit_ids, combat_frame = {}, {}, -1000
-local last_dump_event = -1
+local last_dump_event, last_dump_frame = -1, -1000
+-- Keep this below the 0.75 s companion freshness timeout even around 10 FPS.
+local heartbeat_interval = 5
+local last_dump_enabled, last_dump_paused, last_dump_gameplay, last_dump_ui = nil, nil, nil, nil
+local last_dump_suppressed, last_dump_trigger, last_dump_defense = nil, nil, nil
 local sound_pending, player_sound_object = {}, nil
 local contact_frame, defense_frame, sound_step_frame, sound_side = -1000, -1000, -1000, false
 local pre_suppress_until = -1
@@ -110,8 +118,9 @@ local function emit(kind, id, metadata)
     events[#events+1] = item
     if #events > 128 then table.remove(events,1) end
 end
-local function request_switches(info)
+local function request_switches(info, route)
     local result={}
+    if route and route.switches==false then return result end
     local dict=info:call('get_SwitchInfoDict')
     local entries=dict and dict:get_field('_entries')
     if not entries then return result end
@@ -282,7 +291,10 @@ extra_hook('app.cPlayerCharacterEntity','evOniChangeStartEvent',function(args)
     if entity_is_player(args) then extra('power',20) end
 end)
 extra_hook('app.cPlayerCharacterEntity','deadHeatActionImpactNotice',function(args)
-    if entity_is_player(args) and not sound_ready() then extra('finisher',12) end
+    if same_object(sdk.to_managed_object(args[2]),player_entity) then
+        if player_character and (player_character:call('getActionState') & 524288)~=0 then special_kind='deadheat'; special_frame=frames end
+        if gameplay_allowed and not sound_ready() then extra('finisher',12) end
+    end
 end)
 extra_hook('app.cPlayerCharacterEntity','attackBreakImpactNotice',function(args)
     if same_object(sdk.to_managed_object(args[2]),player_entity) and player_character then
@@ -352,7 +364,7 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
         if route.family=='parry_release' and kind=='dodge' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind}); return end
         defense_frame=frames; combat_frame=frames
         trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='parry_pos',observed_source=name,bits=bits,kind=kind})
-        extra(route.id,1,{switches=request_switches(info),defense_kind=kind},route.family)
+        extra(route.id,1,{switches=request_switches(info,route),defense_kind=kind},route.family)
         return
     end
     if route.source=='player' and name~='Player_00' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='Player_00',observed_source=name,bits=defense_state,kind=defense_kind}); return end
@@ -370,7 +382,7 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
             local kind=classify_defense(bits)
             if kind~='parry' and kind~='deflect' then trace('state_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=bits,kind=kind}); return end
             trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=bits,kind=kind})
-            extra(route.id,1,{switches=request_switches(info),defense_kind=kind},route.family); defense_frame=frames; combat_frame=frames
+            extra(route.id,1,{switches=request_switches(info,route),defense_kind=kind},route.family); defense_frame=frames; combat_frame=frames
             return
         end
         if name~='TrgPos' then trace('source_mismatch',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); return end
@@ -380,11 +392,11 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
         local distance=(a.x-b.x)^2+(a.y-b.y)^2+(a.z-b.z)^2
         if distance>16 then trace('out_of_range',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,distance_squared=distance,bits=defense_state,kind=defense_kind}); return end
         if technique~='none' then
-            trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); extra(route.id,1,{switches=request_switches(info),technique=technique},route.family); combat_frame=frames
+            trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind}); extra(route.id,1,{switches=request_switches(info,route),technique=technique},route.family); combat_frame=frames
             return
         end
         trace('deferred',{event_id=event_id,route=route.id,family=route.family,expected_source='TrgPos',observed_source=name,bits=defense_state,kind=defense_kind})
-        sound_pending[#sound_pending+1]={id=route.id,frame=frames,switches=request_switches(info),family=route.family}
+        sound_pending[#sound_pending+1]={id=route.id,frame=frames,switches=request_switches(info,route),family=route.family}
         if #sound_pending>16 then table.remove(sound_pending,1) end
         return
     end
@@ -392,12 +404,12 @@ extra_hook('soundlib.SoundManager','postRequestInfo',function(args)
         if not player_entity or player_entity:call('getCurrentActionMoveType')<0 then return end
         if frames-combat_frame<18 or frames-sound_step_frame<8 then return end
         sound_step_frame=frames; sound_side=not sound_side
-        extra(route.id..(sound_side and '_left' or '_right'),1,{switches=request_switches(info)},route.family)
+        extra(route.id..(sound_side and '_left' or '_right'),1,{switches=request_switches(info,route)},route.family)
     elseif route.family=='guard' then
-        trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source=route.source,observed_source=name,bits=defense_state,kind=defense_kind}); defense_frame=frames; combat_frame=frames; extra(route.id,3,{switches=request_switches(info)},route.family)
+        trace('accepted',{event_id=event_id,route=route.id,family=route.family,expected_source=route.source,observed_source=name,bits=defense_state,kind=defense_kind}); defense_frame=frames; combat_frame=frames; extra(route.id,3,{switches=request_switches(info,route)},route.family)
     else
         if route.family=='attack' then combat_frame=frames end
-        extra(route.id,technique~='none' and 1 or 4,{switches=request_switches(info),technique=technique},route.family)
+        extra(route.id,technique~='none' and 1 or 4,{switches=request_switches(info,route),technique=technique},route.family)
     end
 end)
 local gui_type='ace.GUIBase`2<app.GUIID.ID,app.UIKey.TYPE>'
@@ -425,8 +437,13 @@ re.on_application_entry('LateUpdateBehavior', function()
     gameplay_allowed=false; ui_allowed=false
     defense_kind='none'; defense_state=0
     safe(function()
-        local ok,value=pcall(json.load_file,'onimusha_dualsense_control.json')
-        if ok and value then control=value end
+        -- Read the companion control file immediately once, then at a small
+        -- fixed cadence to avoid storage-backed JSON work every game frame.
+        if frames-last_control_read>=control_read_interval then
+            last_control_read=frames
+            local ok,value=pcall(json.load_file,'onimusha_dualsense_control.json')
+            if ok and value then control=value end
+        end
         if control then
             if control.routes_token then
                 if routes_token~=control.routes_token and frames>=routes_retry then
@@ -517,10 +534,16 @@ re.on_application_entry('LateUpdateBehavior', function()
         set_native_suppression(not native_bow and enabled and control and age>=0 and age<=2 and
             (control.suppress_legacy==true or (control.output_enabled==true and frames<=pre_suppress_until)))
     end)
-    -- Publish new events on the next update; keep a lower-rate idle heartbeat.
-    if event_id~=last_dump_event or frames % 2 == 0 then
-        last_dump_event=event_id
+    -- Publish new events on the next update. State changes that affect the
+    -- companion's output are also immediate; only unchanged idle state uses
+    -- the lower-rate heartbeat.
+    local state_changed = enabled~=last_dump_enabled or paused~=last_dump_paused
+        or gameplay_allowed~=last_dump_gameplay or ui_allowed~=last_dump_ui
+        or suppressed~=last_dump_suppressed or candidate~=last_dump_trigger
+        or defense_kind~=last_dump_defense
+    if event_id~=last_dump_event or state_changed or frames-last_dump_frame>=heartbeat_interval then
         sequence=sequence+1
+        local wrote=false
         safe(function()
             local snapshot={version=3,session=session,seq=sequence,frame=frames,
             enabled=enabled,paused=paused,trigger=candidate,events=events,counters=counters,errors=errors,
@@ -531,7 +554,15 @@ re.on_application_entry('LateUpdateBehavior', function()
             legacy_suppressed=suppressed,native_feedback=native_feedback}
             if trace_enabled(defense_kind) then snapshot.defense_trace=trace_entries; snapshot.defense_trace_dropped=trace_dropped end
             json.dump_file(path,snapshot)
+            wrote=true
         end)
+        if wrote then
+            last_dump_event=event_id; last_dump_frame=frames
+            last_dump_enabled=enabled; last_dump_paused=paused
+            last_dump_gameplay=gameplay_allowed; last_dump_ui=ui_allowed
+            last_dump_suppressed=suppressed; last_dump_trigger=candidate
+            last_dump_defense=defense_kind
+        end
     end
 end)
 re.on_draw_ui(function()

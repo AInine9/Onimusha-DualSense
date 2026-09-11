@@ -74,6 +74,7 @@ sealed class ExtendedEffects
                 bool eventAudible = false;
                 int priority = source.Family switch { "footsteps" => 1, "ui" => 4, "attack" => 4, "guard" => 10, "contact" => 9, _ => 7 };
                 double cooldown = source.Family switch { "footsteps" => .13, "ui" => .07, "attack" => .12, _ => .065 };
+                var routeIds = source.Family == "footsteps" ? new[] { source.Id + "_left", source.Id + "_right" } : new[] { source.Id };
                 foreach (string side in source.Family == "footsteps" ? new[] { "_left", "_right" } : new[] { "" })
                 {
                     string id = source.Id + side;
@@ -135,7 +136,10 @@ sealed class ExtendedEffects
                     }
                 }
                 sourceCache.Clear();
-                if (files.Count > 0 && eventAudible) SoundEvents[source.Event] = new { id = source.Id, family = source.Family, source = source.Source };
+                bool routeHasSwitches = routeIds.Any(id => SoundChoices.TryGetValue(id, out var choices)
+                    && choices.Any(choice => choice.Switches.Length > 0));
+                if (files.Count > 0 && eventAudible)
+                    SoundEvents[source.Event] = new { id = source.Id, family = source.Family, source = source.Source, switches = routeHasSwitches };
             }
             DefenseSounds.Load(this, samples);
         }

@@ -77,7 +77,7 @@ static class DefenseSounds
             string id = "defense_sound_" + ev;
             if (family == "parry_stop")
             {
-                effects.SoundEvents[ev] = new { id, family, source = "parry_pos", stops = "defense_sound_" + node["stops"]!.ToString() };
+                effects.SoundEvents[ev] = new { id, family, source = "parry_pos", switches = false, stops = "defense_sound_" + node["stops"]!.ToString() };
                 continue;
             }
             var variants = new List<string>();
@@ -90,7 +90,7 @@ static class DefenseSounds
             }
             effects.Available[id] = new(id, "defense", 11, .04, 0, 0, 0, 1, Family: family);
             effects.Variants[id] = variants.ToArray();
-            effects.SoundEvents[ev] = new { id, family, source = "parry_pos" };
+            effects.SoundEvents[ev] = new { id, family, source = "parry_pos", switches = false };
         }
     }
 }
