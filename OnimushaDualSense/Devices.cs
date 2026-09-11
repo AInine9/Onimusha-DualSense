@@ -105,7 +105,10 @@ sealed class HidRecovery : IDisposable
     double backoff = .5;
     bool disposed;
 
-    public HidRecovery(IHidOutput initial, Func<IHidOutput> factory, Action<string> log)
+    public HidRecovery(Func<IHidOutput> factory, Action<string> log)
+        : this(null, factory, log) { }
+
+    public HidRecovery(IHidOutput? initial, Func<IHidOutput> factory, Action<string> log)
     {
         output = initial;
         this.factory = factory;
@@ -127,7 +130,7 @@ sealed class HidRecovery : IDisposable
                 candidate.Send(Protocol.Report(audio: false));
                 output = candidate;
                 backoff = .5;
-                log("USB HID reopened; both triggers released.");
+                log("USB HID output opened; both triggers released.");
             }
             catch (Win32Exception e)
             {
@@ -246,6 +249,9 @@ sealed class Audio : IDisposable
     public int Underflows => Volatile.Read(ref underflows);
     static void Check(int code) { if (code < 0) throw new InvalidOperationException($"PortAudio {code}: {Marshal.PtrToStringUTF8(Pa_GetErrorText(code))}"); }
     public double OutputLatency { get; private set; }
+    public static bool IsDualSenseOutputName(string name) =>
+        name.Contains("DualSense", StringComparison.OrdinalIgnoreCase)
+        || name.Equals("Wireless Controller", StringComparison.OrdinalIgnoreCase);
     [StructLayout(LayoutKind.Sequential)] struct StreamInfo { public int Version; public double InputLatency, OutputLatency, Rate; }
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern nint Pa_GetStreamInfo(nint stream);
     public Audio(Mixer mixer, bool normalOutput = false)
@@ -273,7 +279,7 @@ sealed class Audio : IDisposable
             {
                 var d = Marshal.PtrToStructure<DeviceInfo>(Pa_GetDeviceInfo(i));
                 var host = Marshal.PtrToStructure<HostInfo>(Pa_GetHostApiInfo(d.HostApi));
-                if (normalOutput ? host.Type == 13 && host.Output == i && d.Outputs >= 2 : d.Outputs == 4 && host.Type == 13 && (Marshal.PtrToStringUTF8(d.Name) ?? "").Contains("DualSense", StringComparison.OrdinalIgnoreCase)) found.Add((i, d));
+                if (normalOutput ? host.Type == 13 && host.Output == i && d.Outputs >= 2 : d.Outputs == 4 && host.Type == 13 && IsDualSenseOutputName(Marshal.PtrToStringUTF8(d.Name) ?? "")) found.Add((i, d));
             }
             if (found.Count != 1) throw new InvalidOperationException($"Expected one four-channel DualSense WASAPI device; found {found.Count}");
             var parameters = new Parameters { Device = found[0].Index, Channels = normalOutput ? 2 : 4, Format = 1, Latency = found[0].Info.LowOutput };

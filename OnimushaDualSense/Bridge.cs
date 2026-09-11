@@ -52,12 +52,12 @@ static class Bridge
             return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent });
 #endif
         }
-        using var hid = new HidRecovery(new Hid(), () => new Hid(), Files.Log);
+        using var hid = new HidRecovery(() => new Hid(), Files.Log);
         Audio? audio = null;
         try
         {
             audio = new Audio(mixer);
-            Files.Log($"C# companion: USB HID and four-channel WASAPI open; {extensions.Available.Count} feedback patterns loaded.");
+            Files.Log($"C# companion: USB HID recovery active; four-channel WASAPI open; {extensions.Available.Count} feedback patterns loaded.");
 #if DEVELOPER
             using var audition = new Audition();
 #endif
