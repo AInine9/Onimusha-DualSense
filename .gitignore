@@ -28,3 +28,5 @@ CURRENT_STATE.md
 STRUCTURE.md
 docs/
 tools/launcher-baseline.md
+tools/bootstrap-lua-test-runtime.ps1
+tools/run-lua-tests.ps1
