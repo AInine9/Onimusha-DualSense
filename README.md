@@ -1,6 +1,10 @@
-# Onimusha DualSense 1.1.2
+# Onimusha DualSense
 
-An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds sound- and action-based haptic feedback and adaptive-trigger effects for a USB-connected DualSense controller.
+An unofficial DualSense haptics mod for the PC version of Onimusha: Way of the Sword.
+It adds sound- and action-based haptic feedback together with adaptive-trigger effects.
+
+This mod does not reproduce the PS5’s haptic feedback or the game’s official haptic effects.
+It generates haptic files from the game’s sound effects and plays them as a mod.
 
 ## Requirements
 
@@ -9,20 +13,53 @@ An unofficial mod for the PC version of *Onimusha: Way of the Sword*. It adds so
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
 - Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
 
-Bow charging preserves the game's original vibration and prevents MOD footsteps from masking it. Attack and defense feedback resumes when combat interrupts the charge. Adaptive-trigger resistance is enabled by default.
-
 ## Install
 
-Download the GitHub release ZIP, extract it to a writable folder, close the game, and run `Setup.cmd`. The GitHub package includes the four public launchers. The NexusMods package is launcher-free and uses the copy-and-paste CMD snippets on the mod download page. Setup downloads checksum-pinned tools and generates haptic data from the user's local game files. Connect the DualSense by USB, then run `Start-Mod.cmd`. Set `auto_launch_game` to `false` in `config.json` when the game should be started separately from Steam.
+Installation
+1. Install a compatible version of REFramework in the game folder.
+2. Download mod and unpack
+3. Run `Setup.cmd`.
+4. Wait while Setup downloads the required external tools and generates haptic data from your local game files.
+5. Connect the DualSense controller by USB.
+6. Run `Start-Mod.cmd`.
 
-See the [distribution README](distribution/README.md) for complete installation, configuration, and troubleshooting instructions.
+## Usage
+1. Connect the DualSense controller by USB.
+2. Run `Start-Mod.cmd`.
+3. The mod starts the game automatically and remains active while the game is running.
+4. The mod closes automatically after the game exits.
+
+## Configuration
+Edit `config.json` in the mod folder:
+- `gain` — Controls the overall haptic strength. The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
+- `adaptive_triggers` —  it defaults to true, while false disables trigger resistance.
+- `adaptive_trigger_strength`  — The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
+- `auto_launch_game`  —  whether to launch the game automatically on start mod
+
+## Uninstall
+1. Close the game.
+2. Run `Uninstall.cmd`.
+3. Delete the extracted mod folder if you no longer need it.
+
+## Troubleshooting
+If the mod does not respond, check the following:
+- The DualSense is connected by USB.
+- The DualSense audio device is enabled in Windows.
+- REFramework is installed and compatible with the current game version.
+- Steam Input and the game's controller settings are working correctly.
+
+Additional diagnostic information is written to:
+`data/bridge.log`
+Send me the log if you encounter some issues.
 
 ## Build and test
 
 See [BUILD.md](BUILD.md) for the runtime build and the GitHub/NexusMods package formats. Release builds target Windows x64 and .NET 10.
 
-For installation, configuration, and troubleshooting, see the [distribution README](distribution/README.md).
-
 ## Legal
 
 This mod is unofficial and is not affiliated with Capcom, Sony, or the game developers. The source code is available under the [MIT License](LICENSE). Third-party components and setup dependencies are documented in [THIRD_PARTY_NOTICES.txt](distribution/THIRD_PARTY_NOTICES.txt).
+
+## Nexus Mod
+https://www.nexusmods.com/onimushawayofthesword/mods/137  
+I have not shared the GitHub URL anywhere other than Nexus Mods. If you see it posted on any other site, please be aware that it was not shared by me.
