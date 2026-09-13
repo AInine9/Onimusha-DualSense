@@ -6,6 +6,16 @@ namespace OnimushaDualSense;
 
 sealed class HidUnavailableException(string message) : Exception(message);
 
+sealed class AudioDeviceUnavailableException : InvalidOperationException
+{
+    public AudioDeviceUnavailableException(string message, Exception? inner = null) : base(message, inner) { }
+}
+
+sealed class AudioCallbackException : Exception
+{
+    public AudioCallbackException(Exception inner) : base("Audio callback failed", inner) { }
+}
+
 interface IHidOutput : IDisposable
 {
     void Send(byte[] report);
@@ -311,6 +321,19 @@ sealed class HidRecovery : IDisposable
         }
     }
 
+    // Drops the current handle without opening a replacement. The next normal
+    // send will use the factory and therefore observe the current transport.
+    public void Rebind()
+    {
+        lock (gate)
+        {
+            if (disposed) return;
+            ReleaseCurrentOutput();
+            nextOpen = 0;
+            backoff = .5;
+        }
+    }
+
     bool EnsureOpen(double now)
     {
         if (output != null) return true;
@@ -352,15 +375,20 @@ sealed class HidRecovery : IDisposable
         {
             if (disposed) return;
             disposed = true;
-            if (output != null)
-            {
-                try { output.Send(Protocol.Report(audio: false)); }
-                catch (Win32Exception e) { log($"DualSense HID release failed; native error {e.NativeErrorCode}: {e.Message}"); }
-                output.Dispose();
-                output = null;
-            }
+            ReleaseCurrentOutput();
             bluetoothHapticsInitialized = false;
         }
+    }
+
+    void ReleaseCurrentOutput()
+    {
+        if (output == null) return;
+        var current = output;
+        output = null;
+        bluetoothHapticsInitialized = false;
+        try { current.Send(Protocol.Report(audio: false)); }
+        catch (Win32Exception e) { log($"DualSense HID release failed; native error {e.NativeErrorCode}: {e.Message}"); }
+        finally { DisposeFailed(current); }
     }
 
     void ReleaseFailedOutput()
@@ -503,9 +531,14 @@ sealed class Audio : IDisposable
     }
     public void CheckHealth()
     {
-        if (error != null) throw new InvalidOperationException("Audio callback failed", error);
-        int state = Pa_IsStreamActive(stream); Check(state);
-        if (state == 0) throw new InvalidOperationException("Audio device disconnected or stopped");
+        if (error != null) throw new AudioCallbackException(error);
+        int state = Pa_IsStreamActive(stream);
+        if (state < 0)
+        {
+            try { Check(state); }
+            catch (InvalidOperationException e) { throw new AudioDeviceUnavailableException(e.Message, e); }
+        }
+        if (state == 0) throw new AudioDeviceUnavailableException("Audio device disconnected or stopped");
     }
     public void Dispose()
     {

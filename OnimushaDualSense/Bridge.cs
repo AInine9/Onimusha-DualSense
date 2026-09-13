@@ -3,6 +3,155 @@ using System.Text.Json.Nodes;
 
 namespace OnimushaDualSense;
 
+interface IRuntimeOutputSink : IDisposable
+{
+    double OutputLatency { get; }
+    int Underflows { get; }
+    void CheckHealth();
+}
+
+sealed class AudioOutputSink(Audio audio) : IRuntimeOutputSink
+{
+    public double OutputLatency => audio.OutputLatency;
+    public int Underflows => audio.Underflows;
+    public void CheckHealth() => audio.CheckHealth();
+    public void Dispose() => audio.Dispose();
+}
+
+sealed class BluetoothOutputSink(BluetoothHaptics haptics) : IRuntimeOutputSink
+{
+    public double OutputLatency => 0;
+    public int Underflows => 0;
+    public void CheckHealth() { }
+    public void Dispose() => haptics.Dispose();
+}
+
+enum RuntimeOutputRoute { Audio, Bluetooth }
+
+sealed class RuntimeOutputCoordinator : IDisposable
+{
+    public const double PollIntervalSeconds = .5;
+    const int StableObservations = 2;
+    readonly HidRecovery hid;
+    readonly Action<string> log;
+    readonly Func<IRuntimeOutputSink> openAudio;
+    readonly Func<IRuntimeOutputSink> openBluetooth;
+    readonly Func<List<Hid.Device>> find;
+    IRuntimeOutputSink? sink;
+    RuntimeOutputRoute route = RuntimeOutputRoute.Audio;
+    string? observedKey, stableKey;
+    int observations;
+    int absentObservations;
+    double nextPoll, nextOpen;
+    bool disposed;
+
+    public RuntimeOutputCoordinator(HidRecovery hid, Action<string> log,
+        Func<Audio> openAudio, Func<BluetoothHaptics> openBluetooth, Func<List<Hid.Device>> find)
+        : this(hid, log, () => new AudioOutputSink(openAudio()), () => new BluetoothOutputSink(openBluetooth()), find) { }
+
+    internal RuntimeOutputCoordinator(HidRecovery hid, Action<string> log,
+        Func<IRuntimeOutputSink> openAudio, Func<IRuntimeOutputSink> openBluetooth, Func<List<Hid.Device>> find)
+    {
+        this.hid = hid; this.log = log; this.openAudio = openAudio; this.openBluetooth = openBluetooth; this.find = find;
+    }
+
+    public double OutputLatency => sink?.OutputLatency ?? 0;
+    public int AudioUnderflows => sink?.Underflows ?? 0;
+    internal RuntimeOutputRoute Route => route;
+    internal bool HasSink => sink != null;
+
+    internal static RuntimeOutputRoute SelectRoute(Hid.Device? device) =>
+        device?.Transport == HidTransport.Bluetooth && device.ReportLength >= BluetoothHapticsProtocol.ReportLength
+            ? RuntimeOutputRoute.Bluetooth : RuntimeOutputRoute.Audio;
+
+    public void Update(double now)
+    {
+        if (disposed) throw new ObjectDisposedException(nameof(RuntimeOutputCoordinator));
+        if (now >= nextPoll)
+        {
+            nextPoll = now + PollIntervalSeconds;
+            try { Observe(find(), now); }
+            catch (System.ComponentModel.Win32Exception e) { log($"C# companion: HID poll failed with native error {e.NativeErrorCode}; retaining the current output route."); }
+        }
+
+        if (sink != null)
+        {
+            try { sink.CheckHealth(); }
+            catch (AudioDeviceUnavailableException e)
+            {
+                log($"C# companion: audio output health check failed ({e.Message}); reopening the audio path.");
+                sink.Dispose(); sink = null; nextOpen = now + PollIntervalSeconds;
+            }
+        }
+        if (sink == null && now >= nextOpen) TryOpen(now);
+    }
+
+    void Observe(List<Hid.Device> devices, double now)
+    {
+        if (devices.Count > 1) { absentObservations = 0; return; }
+        if (devices.Count == 0)
+        {
+            observedKey = null; observations = 0;
+            if (++absentObservations >= StableObservations && stableKey != null) SetStable(null, now);
+            return;
+        }
+        absentObservations = 0;
+        var candidate = devices[0]; string key = Key(candidate);
+        if (key == observedKey) observations++; else { observedKey = key; observations = 1; }
+        if (observations >= StableObservations && stableKey != key) SetStable(candidate, now);
+    }
+
+    void SetStable(Hid.Device? candidate, double now)
+    {
+        string? previousKey = stableKey;
+        stableKey = candidate == null ? null : Key(candidate);
+        var selected = SelectRoute(candidate);
+        if (selected != route) { ChangeRoute(selected, now); return; }
+        if (previousKey != stableKey)
+        {
+            sink?.Dispose(); sink = null;
+            nextOpen = now;
+        }
+        // A new USB/Bluetooth path can have the same route but a stale native handle.
+        hid.Rebind();
+        log(candidate == null ? "C# companion: no supported HID device; retrying output discovery." :
+            $"C# companion: stable {candidate.Transport} HID candidate selected; output route remains {route}.");
+    }
+
+    void ChangeRoute(RuntimeOutputRoute selected, double now)
+    {
+        sink?.Dispose(); sink = null;
+        hid.Rebind();
+        route = selected;
+        nextOpen = now;
+        log($"C# companion: output route changed to {route}; retrying the current sink.");
+    }
+
+    void TryOpen(double now)
+    {
+        try
+        {
+            sink = (route == RuntimeOutputRoute.Bluetooth ? openBluetooth : openAudio)();
+            log(route == RuntimeOutputRoute.Bluetooth ? "C# companion: Bluetooth HID haptics stream active; direct PCM output selected." :
+                "C# companion: DualSense HID recovery active; four-channel WASAPI open.");
+        }
+        catch (InvalidOperationException e)
+        {
+            log($"C# companion: {route} output unavailable ({e.Message}); retrying.");
+            nextOpen = now + PollIntervalSeconds;
+        }
+    }
+
+    static string Key(Hid.Device device) => $"{device.Transport}:{device.ReportLength}:{device.Product}:{device.Path}";
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        sink?.Dispose(); sink = null;
+    }
+}
+
 static class Bridge
 {
     // A bounded polling interval that trims idle CPU/USB traffic while keeping companion latency low.
@@ -53,45 +202,13 @@ static class Bridge
 #endif
         }
         using var hid = new HidRecovery(() => new Hid(), Files.Log);
-        Audio? audio = null;
-        BluetoothHaptics? wireless = null;
+        RuntimeOutputCoordinator? outputs = null;
         try
         {
-            Hid.Device? detected = null;
-            try
-            {
-                var devices = Hid.Find();
-                if (devices.Count == 1) detected = devices[0];
-                else Files.Log($"C# companion: HID preflight found {devices.Count} supported DualSense devices; using the audio path until one device is available.");
-            }
-            catch (System.ComponentModel.Win32Exception e)
-            {
-                Files.Log($"C# companion: HID preflight failed with native error {e.NativeErrorCode}; using the audio path.");
-            }
-            bool useBluetoothHaptics = detected != null
-                && detected.Transport == HidTransport.Bluetooth
-                && detected.ReportLength >= BluetoothHapticsProtocol.ReportLength;
-            if (useBluetoothHaptics)
-            {
-                wireless = new BluetoothHaptics(mixer, hid, Files.Log);
-                Files.Log($"C# companion: Bluetooth HID haptics stream active; direct PCM output report selected ({detected!.ReportLength} bytes); {extensions.Available.Count} feedback patterns loaded.");
-            }
-            else
-            {
-                try
-                {
-                    audio = new Audio(mixer);
-                    Files.Log($"C# companion: DualSense HID recovery active; four-channel WASAPI open; {extensions.Available.Count} feedback patterns loaded.");
-                }
-                catch (InvalidOperationException e) when (detected == null)
-                {
-                    // A paired controller can appear after the companion starts. If there is
-                    // no audio endpoint to use while it is absent, keep the HID worker alive
-                    // so the next Bluetooth enumeration can open the direct haptics path.
-                    Files.Log($"C# companion: four-channel WASAPI unavailable ({e.Message}); waiting for a Bluetooth HID haptics device.");
-                    wireless = new BluetoothHaptics(mixer, hid, Files.Log);
-                }
-            }
+            outputs = new RuntimeOutputCoordinator(hid, Files.Log,
+                () => new Audio(mixer),
+                () => new BluetoothHaptics(mixer, hid, Files.Log),
+                Hid.Find);
 #if DEVELOPER
             using var audition = new Audition();
 #endif
@@ -103,7 +220,7 @@ static class Bridge
             while (!File.Exists(Files.Data("stop.request")))
             {
                 double now = Files.Now;
-                audio?.CheckHealth();
+                outputs.Update(now);
 #if DEVELOPER
                 audition.Read(samples, queue, now);
                 if (audition.Active)
@@ -115,10 +232,11 @@ static class Bridge
                     bool ack = false;
                     if (freshGame) try { ack = Files.Read(statePath)["legacy_suppressed"]?.GetValue<bool>() == true; } catch (Exception e) when (ReadableError(e)) { }
                     hid.TrySend(Protocol.Report(), now);
-                    audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, audio?.OutputLatency ?? 0);
+                    audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, outputs.OutputLatency);
                     Thread.Sleep(CompanionLoopSleepMilliseconds); continue;
                 }
 #endif
+                bool soundOutputAvailable = outputs.HasSink;
                 if (now >= nextProcess)
                 {
                     if (lifetime.ShouldExit(Files.GameRunning(), now)) { Files.Log("Game process exited; shutting down."); break; }
@@ -166,11 +284,11 @@ static class Bridge
                 bool gameplay = active && state?["gameplay_allowed"]?.GetValue<bool>() == true;
                 queue.SetNativeBow(gameplay && last!.NativeBow);
                 int trigger = active ? last!.Trigger : -1;
-                outputEnabled = config.Gain > 0 && (active || uiAllowed);
+                outputEnabled = config.Gain > 0 && soundOutputAvailable && (active || uiAllowed);
                 queue.SetDefense(gameplay ? state?["defense_kind"]?.GetValue<string>() ?? "none" : "none", now);
-                queue.SetActivity(config.Gain > 0 && gameplay, config.Gain > 0 && uiAllowed);
+                queue.SetActivity(config.Gain > 0 && soundOutputAvailable && gameplay, config.Gain > 0 && soundOutputAvailable && uiAllowed);
                 queue.Dispatch(state?["legacy_suppressed"]?.GetValue<bool>() == true, now);
-                bool suppress = queue.RequiresSuppression(gameplay, uiAllowed, now);
+                bool suppress = soundOutputAvailable && queue.RequiresSuppression(gameplay, uiAllowed, now);
                 if ((suppress != lastSuppress || now - lastControl > ControlHeartbeatSeconds) && now - controlAttempt >= .05)
                 {
                     controlAttempt = now;
@@ -193,7 +311,7 @@ static class Bridge
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
                         extended_audio_active = mixer.Playing, defense_kind = queue.DefenseKind, parry_plays = queue.ParryPlays,
                         skipped_extensions = queue.Skipped, suppression_requested = suppress, sound_reference_events = extensions.SoundEvents.Count,
-                        audio_underflows = audio?.Underflows ?? 0, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
+                        audio_underflows = outputs.AudioUnderflows, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
                 if (seconds > 0 && now - began >= seconds) break;
                 Thread.Sleep(CompanionLoopSleepMilliseconds);
             }
@@ -201,21 +319,10 @@ static class Bridge
         }
         finally
         {
+            outputs?.Dispose();
             mixer.Stop(); outputEnabled = false;
-            try { wireless?.Dispose(); }
-            finally
-            {
-                try { audio?.Dispose(); }
-                finally
-                {
-                    try { WriteControl(false); }
-                    finally
-                    {
-                        try { hid.Release(); }
-                        finally { Files.Atomic(Files.Data("status.json"), new { running = false }); Files.Log("Output stopped; both triggers released."); }
-                    }
-                }
-            }
+            try { WriteControl(false); }
+            finally { hid.Release(); Files.Atomic(Files.Data("status.json"), new { running = false }); Files.Log("Output stopped; both triggers released."); }
         }
     }
     static bool ReadableError(Exception e) => e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or InvalidDataException or KeyNotFoundException or NullReferenceException or FormatException;
