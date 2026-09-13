@@ -6,23 +6,23 @@ Use Windows x64 and the .NET 10 SDK. Run these commands from the source root.
 
 ```powershell
 dotnet restore OnimushaDualSense --configfile NuGet.Config
-dotnet publish OnimushaDualSense -c Release -o publish --configfile NuGet.Config
+dotnet publish OnimushaDualSense -c Release -o work/build/publish --configfile NuGet.Config
 ```
 
-The commands above use the .NET SDK installed on your machine and create a Windows x64 runtime in `publish`.
+The commands above use the .NET SDK installed on your machine and create a Windows x64 runtime in `work/build/publish`.
 
 ## Package a build
 
 ```powershell
-./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory github-release
-./tools/package-release.ps1 -PublishDirectory publish -OutputDirectory nexus-release -NexusMod
+./tools/package-release.ps1 -PublishDirectory work/build/publish -OutputDirectory work/github-release
+./tools/package-release.ps1 -PublishDirectory work/build/publish -OutputDirectory work/nexus-release -NexusMod
 ```
 
 The published runtime requires the [.NET 10 Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0); end users do not need the SDK.
 
 ## Package formats
 
-Package `github-release` for GitHub; it includes the four public CMD launchers. Package `nexus-release` for NexusMods; `-NexusMod` omits all CMD launchers. Do not include generated game audio, logs, backups, or development tools in any package. `UseAppHost=false` produces a .NET DLL; PortAudio is the bundled native DLL. Choose a new output directory each time you run the packaging script.
+Package `work/github-release` for GitHub; it includes the four public CMD launchers. Package `work/nexus-release` for NexusMods; `-NexusMod` omits all CMD launchers. Do not include generated game audio, logs, backups, or development tools in any package. `UseAppHost=false` produces a .NET DLL; PortAudio is the bundled native DLL. Keep build and package outputs under `work/` and choose a new output directory each time you run the packaging script.
 
 ## Runtime checks
 
