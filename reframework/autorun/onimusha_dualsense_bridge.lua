@@ -31,6 +31,22 @@ local function special_context()
     return 'none'
 end
 local extra_counts, extra_hooks, extra_last = {}, {}, {}
+-- `extra_counts` is useful diagnostics, but serializing the lifetime map on
+-- every combat event makes the game-thread snapshot grow throughout a fight.
+-- Keep a small delta in the hot snapshot and publish the full map separately
+-- at a bounded cadence. Haptics still use the event ring immediately.
+local extended_delta, extended_delta_order = {}, {}
+local extended_delta_limit, metrics_interval, last_metrics_frame = 32, 60, -1000
+local function note_extended_delta(id, count)
+    if extended_delta[id]==nil then
+        extended_delta_order[#extended_delta_order+1]=id
+        if #extended_delta_order>extended_delta_limit then
+            local oldest=table.remove(extended_delta_order,1)
+            extended_delta[oldest]=nil
+        end
+    end
+    extended_delta[id]=count
+end
 local attack_params, hit_ids, combat_frame = {}, {}, -1000
 local last_dump_event, last_dump_frame = -1, -1000
 -- Keep this below the 0.75 s companion freshness timeout even around 10 FPS.
@@ -182,6 +198,7 @@ local function extra(id, minimum_frames, metadata, family)
     if id=='attack' or id=='hit' or id=='damage' or id=='guard' or id=='finisher' then combat_frame=frames end
     extra_last[id]=frames
     extra_counts[id]=(extra_counts[id] or 0)+1
+    note_extended_delta(id,extra_counts[id])
     if control and control.output_enabled==true then pre_suppress_until=frames+4 end
     emit('extended',id,metadata)
 end
@@ -480,7 +497,7 @@ re.on_application_entry('LateUpdateBehavior', function()
         local vm = sdk.get_managed_singleton('app.AppPadVibrationManager')
         paused = not vm or vm:get_field('_IsPauseVibration') or not vm:call('get_IsVibrationOn')
         ui_allowed=enabled and vm~=nil and vm:call('get_IsVibrationOn')
-        if enabled and not paused then
+        if enabled and not paused and (not control or control.adaptive_triggers~=false) then
             local manager=sdk.get_managed_singleton('app.AdaptiveTriggerManager')
             if manager then
                 checking=true
@@ -541,6 +558,7 @@ re.on_application_entry('LateUpdateBehavior', function()
         or gameplay_allowed~=last_dump_gameplay or ui_allowed~=last_dump_ui
         or suppressed~=last_dump_suppressed or candidate~=last_dump_trigger
         or defense_kind~=last_dump_defense
+    local metrics_due=frames-last_metrics_frame>=metrics_interval
     if event_id~=last_dump_event or state_changed or frames-last_dump_frame>=heartbeat_interval then
         sequence=sequence+1
         local wrote=false
@@ -550,11 +568,12 @@ re.on_application_entry('LateUpdateBehavior', function()
             ui_allowed=ui_allowed,gameplay_allowed=gameplay_allowed,native_bow=native_bow,
             defense_kind=defense_kind,defense_state=defense_state,
             bow_counts=bow_counts,bow_last_reason=bow_last_reason,
-            extended_counts=extra_counts,extended_hooks=extra_hooks,
+            extended_hooks=extra_hooks,
             legacy_suppressed=suppressed,native_feedback=native_feedback}
+            if next(extended_delta)~=nil then snapshot.extended_counts_delta=extended_delta end
+            if metrics_due then snapshot.extended_counts=extra_counts; snapshot.metrics_frame=frames end
             if trace_enabled(defense_kind) then snapshot.defense_trace=trace_entries; snapshot.defense_trace_dropped=trace_dropped end
-            json.dump_file(path,snapshot)
-            wrote=true
+            wrote=json.dump_file(path,snapshot)==true
         end)
         if wrote then
             last_dump_event=event_id; last_dump_frame=frames
@@ -562,6 +581,8 @@ re.on_application_entry('LateUpdateBehavior', function()
             last_dump_gameplay=gameplay_allowed; last_dump_ui=ui_allowed
             last_dump_suppressed=suppressed; last_dump_trigger=candidate
             last_dump_defense=defense_kind
+            extended_delta={}; extended_delta_order={}
+            if metrics_due then last_metrics_frame=frames end
         end
     end
 end)

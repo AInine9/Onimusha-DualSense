@@ -230,6 +230,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     double contactUntil;
     double suppressUntil;
     readonly Dictionary<string, HashSet<string>> parryVoices = [];
+    readonly Dictionary<string, int> sampledEventLogs = [];
     Request? recentGuard;
     public string DefenseKind { get; private set; } = "none";
     public int ParryPlays { get; private set; }
@@ -248,6 +249,15 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     {
         if (!parryVoices.TryGetValue(owner, out var voices)) parryVoices[owner] = voices = [];
         voices.Add(voice);
+    }
+    void SampleEventLog(string key, string message)
+    {
+        int count = sampledEventLogs.GetValueOrDefault(key) + 1;
+        sampledEventLogs[key] = count;
+        // Preserve the first occurrences and exponentially spaced samples so
+        // repeated boss-fight events cannot turn bridge.log into a synchronous
+        // per-event disk workload. Full counts remain in the status snapshot.
+        if (count <= 2 || (count & (count - 1)) == 0) log($"{message} count={count}");
     }
     void FadeParryVoices()
     {
@@ -279,7 +289,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
         {
             TrackParryVoice(p.Extra.Id, replacement); ParryPlays++;
             activeBaseFriction = true; activeBaseOwner = p.Extra.Id;
-            log($"Extended haptic PLAY id=parry_{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={replacement} promoted=true");
+            SampleEventLog("play:" + p.Extra.Id, $"Extended haptic PLAY id=parry_{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={replacement} promoted=true");
         }
         recentGuard = null;
     }
@@ -290,7 +300,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     void Skip(string id, string reason, long sequence, long frame)
     {
         string key = id + ":" + reason; Skipped[key] = Skipped.GetValueOrDefault(key) + 1;
-        log($"Extended haptic SKIP id={id} reason={reason} event={sequence} frame={frame}");
+        SampleEventLog("skip:" + key, $"Extended haptic SKIP id={id} reason={reason} event={sequence} frame={frame}");
     }
     public Dictionary<string, int> ExtraPlays { get; } = [];
     public bool HasWork => pending.Count > 0 || mixer.Playing;
@@ -397,7 +407,7 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
             if (!mixer.Play(selected, level: p.Layer ? .6f : 1)) continue;
             if (!p.Layer) { activeBaseFriction = friction; activeBaseOwner = friction ? p.Extra.Id : null; }
             if (friction) { TrackParryVoice(p.Extra.Id, selected); ParryPlays++; }
-            { ExtraPlays[p.Extra.Id] = ExtraPlays.GetValueOrDefault(p.Extra.Id) + 1; log($"Extended haptic PLAY id={(p.Technique.Length > 0 ? p.Technique + "_" : friction && !p.Extra.Id.StartsWith("defense_") ? "parry_" : "")}{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={selected} layer={p.Layer}"); }
+            { ExtraPlays[p.Extra.Id] = ExtraPlays.GetValueOrDefault(p.Extra.Id) + 1; SampleEventLog("play:" + p.Extra.Id, $"Extended haptic PLAY id={(p.Technique.Length > 0 ? p.Technique + "_" : friction && !p.Extra.Id.StartsWith("defense_") ? "parry_" : "")}{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={selected} layer={p.Layer}"); }
         }
         pending.Clear();
     }
