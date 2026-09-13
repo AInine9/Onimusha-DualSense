@@ -8,7 +8,7 @@ It generates haptic files from the game’s sound effects and plays them as a mo
 
 ## Requirements
 
-- Windows x64, the supported PC version of the game, and one DualSense or DualSense Edge connected by USB. Edge support is provisional and has not been tested on physical hardware.
+- Windows x64, the supported PC version of the game, and one DualSense or DualSense Edge connected by USB or Bluetooth. Bluetooth HID haptics are supported for compatible Windows Bluetooth collections; USB remains the recommended setup. Edge support is provisional and has not been tested on physical hardware.
 - [.NET 10 Runtime for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0). The .NET SDK is not required for installation.
 - A game-compatible version of [REFramework](https://github.com/praydog/REFramework).
 - Steam Input can remain enabled. The DualSense audio device must be enabled in Windows.
@@ -43,8 +43,9 @@ Edit `config.json` in the mod folder:
 
 ## Troubleshooting
 If the mod does not respond, check the following:
-- The DualSense is connected by USB.
-- The DualSense audio device is enabled in Windows.
+- The DualSense is connected by USB or Bluetooth, and only one supported controller is visible.
+- For USB, the DualSense audio device is enabled in Windows.
+- Bluetooth mode is supported through direct HID haptics and does not require a four-channel audio endpoint, but it requires a compatible Bluetooth HID collection (the current DualSense path reports at least 142 output bytes).
 - REFramework is installed and compatible with the current game version.
 - Steam Input and the game's controller settings are working correctly.
 

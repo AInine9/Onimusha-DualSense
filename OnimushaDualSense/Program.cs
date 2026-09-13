@@ -27,11 +27,12 @@ static class Program
                 case "diagnose":
                     Console.WriteLine($"Onimusha DualSense 1.1.2 / {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
                     Console.WriteLine("Game running: " + Files.GameRunning());
-                    Console.WriteLine("USB DualSense HID devices: " + Hid.Find().Count);
+                    Console.WriteLine("DualSense HID devices: " + Hid.Find().Count);
                     Console.WriteLine("Steam game: " + Setup.Discover()); return 0;
 #if DEVELOPER
                 case "inspect": Inspector.Launch(); return 0;
                 case "inspect-server": return Inspector.Run(!args.Contains("--no-open"));
+                case "diagnose-audio": Audio.Diagnose(); return 0;
                 case "test": return Tests.Run();
                 case "audit-haptics": HapticAudit.Run(); return 0;
                 case "verify-prepared": HapticAudit.VerifyPrepared(); return 0;

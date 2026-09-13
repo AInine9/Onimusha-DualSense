@@ -54,10 +54,44 @@ static class Bridge
         }
         using var hid = new HidRecovery(() => new Hid(), Files.Log);
         Audio? audio = null;
+        BluetoothHaptics? wireless = null;
         try
         {
-            audio = new Audio(mixer);
-            Files.Log($"C# companion: USB HID recovery active; four-channel WASAPI open; {extensions.Available.Count} feedback patterns loaded.");
+            Hid.Device? detected = null;
+            try
+            {
+                var devices = Hid.Find();
+                if (devices.Count == 1) detected = devices[0];
+                else Files.Log($"C# companion: HID preflight found {devices.Count} supported DualSense devices; using the audio path until one device is available.");
+            }
+            catch (System.ComponentModel.Win32Exception e)
+            {
+                Files.Log($"C# companion: HID preflight failed with native error {e.NativeErrorCode}; using the audio path.");
+            }
+            bool useBluetoothHaptics = detected != null
+                && detected.Transport == HidTransport.Bluetooth
+                && detected.ReportLength >= BluetoothHapticsProtocol.ReportLength;
+            if (useBluetoothHaptics)
+            {
+                wireless = new BluetoothHaptics(mixer, hid, Files.Log);
+                Files.Log($"C# companion: Bluetooth HID haptics stream active; direct PCM output report selected ({detected!.ReportLength} bytes); {extensions.Available.Count} feedback patterns loaded.");
+            }
+            else
+            {
+                try
+                {
+                    audio = new Audio(mixer);
+                    Files.Log($"C# companion: DualSense HID recovery active; four-channel WASAPI open; {extensions.Available.Count} feedback patterns loaded.");
+                }
+                catch (InvalidOperationException e) when (detected == null)
+                {
+                    // A paired controller can appear after the companion starts. If there is
+                    // no audio endpoint to use while it is absent, keep the HID worker alive
+                    // so the next Bluetooth enumeration can open the direct haptics path.
+                    Files.Log($"C# companion: four-channel WASAPI unavailable ({e.Message}); waiting for a Bluetooth HID haptics device.");
+                    wireless = new BluetoothHaptics(mixer, hid, Files.Log);
+                }
+            }
 #if DEVELOPER
             using var audition = new Audition();
 #endif
@@ -69,7 +103,7 @@ static class Bridge
             while (!File.Exists(Files.Data("stop.request")))
             {
                 double now = Files.Now;
-                audio.CheckHealth();
+                audio?.CheckHealth();
 #if DEVELOPER
                 audition.Read(samples, queue, now);
                 if (audition.Active)
@@ -81,7 +115,7 @@ static class Bridge
                     bool ack = false;
                     if (freshGame) try { ack = Files.Read(statePath)["legacy_suppressed"]?.GetValue<bool>() == true; } catch (Exception e) when (ReadableError(e)) { }
                     hid.TrySend(Protocol.Report(), now);
-                    audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, audio.OutputLatency);
+                    audition.Tick(mixer, Focus.IsGame(), ack && now - lastControl < 1, freshGame, now, audio?.OutputLatency ?? 0);
                     Thread.Sleep(CompanionLoopSleepMilliseconds); continue;
                 }
 #endif
@@ -159,7 +193,7 @@ static class Bridge
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
                         extended_audio_active = mixer.Playing, defense_kind = queue.DefenseKind, parry_plays = queue.ParryPlays,
                         skipped_extensions = queue.Skipped, suppression_requested = suppress, sound_reference_events = extensions.SoundEvents.Count,
-                        audio_underflows = audio.Underflows, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
+                        audio_underflows = audio?.Underflows ?? 0, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
                 if (seconds > 0 && now - began >= seconds) break;
                 Thread.Sleep(CompanionLoopSleepMilliseconds);
             }
@@ -168,14 +202,18 @@ static class Bridge
         finally
         {
             mixer.Stop(); outputEnabled = false;
-            try { audio?.Dispose(); }
+            try { wireless?.Dispose(); }
             finally
             {
-                try { WriteControl(false); }
+                try { audio?.Dispose(); }
                 finally
                 {
-                    try { hid.Release(); }
-                    finally { Files.Atomic(Files.Data("status.json"), new { running = false }); Files.Log("Output stopped; both triggers released."); }
+                    try { WriteControl(false); }
+                    finally
+                    {
+                        try { hid.Release(); }
+                        finally { Files.Atomic(Files.Data("status.json"), new { running = false }); Files.Log("Output stopped; both triggers released."); }
+                    }
                 }
             }
         }
