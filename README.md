@@ -21,11 +21,11 @@ Installation
 3. Run `Setup.cmd`.
 4. If Setup cannot find the game automatically, enter the path to the game folder containing `OnimushaWotS.exe` when prompted. Enter the folder path, not the `.exe` path.
 5. Wait while Setup downloads the required external tools and generates haptic data from your local game files.
-6. Connect the DualSense controller by USB.
+6. Connect the DualSense controller.
 7. Run `Start-Mod.cmd`.
 
 ## Usage
-1. Connect the DualSense controller by USB.
+1. Connect the DualSense controller.
 2. Run `Start-Mod.cmd`.
 3. The MOD runs while the Start-Mod console window is open. To stop the MOD, close this window.
 4. By default, the mod starts Onimusha: Way of the Sword from Steam and remains active while the game is running.
