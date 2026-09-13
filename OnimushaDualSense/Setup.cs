@@ -1,7 +1,6 @@
 using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO.Compression;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace OnimushaDualSense;
@@ -112,20 +111,16 @@ static class Setup
     {
         Directory.CreateDirectory(Path.Combine(game, "reframework/data"));
         string destination = Path.Combine(game, "reframework/autorun", Script); Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        string recordPath = Files.Data("install-record.json"), backup = Files.Data("backup.lua");
+        string recordPath = Files.Data("install-record.json");
         var previous = File.Exists(recordPath) ? Files.Read(recordPath) : null;
         if (previous != null && !Path.GetFullPath(previous["game"]!.GetValue<string>()).Equals(game, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("This folder belongs to another game installation; uninstall first");
         if (File.Exists(destination))
         {
             if (previous != null) { if (Files.Sha(destination) != previous["installed_sha256"]!.GetValue<string>()) throw new InvalidDataException("Installed Lua was modified; it was not replaced"); }
-            else
-            {
-                if (!File.ReadAllText(destination).StartsWith("-- Onimusha DualSense bridge")) throw new InvalidDataException("A different file occupies the MOD filename");
-                File.Copy(destination, backup, true);
-            }
+            else if (!File.ReadAllText(destination).StartsWith("-- Onimusha DualSense bridge")) throw new InvalidDataException("A different file occupies the MOD filename");
         }
         string source = Files.Bundled(Script);
-        var record = new { game, installed_sha256 = Files.Sha(source), backup_sha256 = File.Exists(backup) ? Files.Sha(backup) : null };
+        var record = new { game, installed_sha256 = Files.Sha(source) };
         string temp = destination + ".installing"; File.Copy(source, temp, true); File.Move(temp, destination, true);
         Files.Save(recordPath, record);
     }
@@ -146,13 +141,9 @@ static class Setup
         if (File.Exists(target))
         {
             if (Files.Sha(target) != record["installed_sha256"]!.GetValue<string>()) throw new InvalidDataException("Lua was modified; it was not removed");
-            if (record["backup_sha256"] is JsonNode hash)
-            {
-                string backup = Files.Data("backup.lua"); if (!File.Exists(backup) || Files.Sha(backup) != hash.GetValue<string>()) throw new InvalidDataException("Backup mismatch"); File.Copy(backup, target, true);
-            }
-            else File.Delete(target);
+            File.Delete(target);
         }
-        File.Delete(recordPath); Console.WriteLine("MOD Lua removed or previous version restored.");
+        File.Delete(recordPath); Console.WriteLine("MOD Lua removed.");
     }
     public static void Run(string[] args)
     {
