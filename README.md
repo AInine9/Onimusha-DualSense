@@ -28,8 +28,9 @@ Installation
 1. Connect the DualSense controller by USB.
 2. Run `Start-Mod.cmd`.
 3. The MOD runs while the Start-Mod console window is open. To stop the MOD, close this window.
-4. By default, the mod starts Onimusha: Way of the Sword from Steam and remains active while the game is running.
-5. To start the game yourself, run `Start-Mod.cmd --no-game` and launch Onimusha: Way of the Sword manually from Steam.
+4. Detailed diagnostics are saved to `data/bridge.log` instead of scrolling through this window.
+5. By default, the mod starts Onimusha: Way of the Sword from Steam and remains active while the game is running.
+6. To start the game yourself, run `Start-Mod.cmd --no-game` and launch Onimusha: Way of the Sword manually from Steam.
 
 ## Configuration
 Edit `config.json` in the mod folder:

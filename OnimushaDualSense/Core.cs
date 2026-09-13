@@ -8,6 +8,7 @@ namespace OnimushaDualSense;
 static class Files
 {
     public static string Root = AppContext.BaseDirectory;
+    internal static bool EchoLogsToConsole { get; set; } = true;
     public static string At(string name) => Path.Combine(Root, name);
     public static string Data(string name) => At(Path.Combine("data", name));
     public static string Bundled(string name) => At(Path.Combine("bin", name));
@@ -29,7 +30,7 @@ static class Files
     public static void Log(string message)
     {
         string line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}";
-        Console.WriteLine(line);
+        if (EchoLogsToConsole) Console.WriteLine(line);
         try { File.AppendAllText(Data("bridge.log"), line + Environment.NewLine); }
         catch (IOException) { } // A concurrent diagnostic process must not stop controller output.
     }

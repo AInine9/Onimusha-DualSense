@@ -21,6 +21,7 @@ static class Program
                     var config = Configuration.Read();
                     if (string.IsNullOrWhiteSpace(config.Game)) throw new InvalidOperationException("Run Setup.cmd first");
                     bool autoLaunchGame = ShouldAutoLaunchGame(config, args);
+                    Files.EchoLogsToConsole = false;
                     foreach (string line in LaunchInstructions(autoLaunchGame)) Console.WriteLine(line);
                     if (autoLaunchGame)
                     {
