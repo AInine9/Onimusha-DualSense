@@ -24,7 +24,6 @@ if (-not $NexusMod) {
     $launchers = [ordered]@{
         'Setup.cmd' = 'setup'
         'Start-Mod.cmd' = 'launch'
-        'Stop-Mod.cmd' = 'stop'
         'Uninstall.cmd' = 'uninstall'
     }
     foreach ($item in $launchers.GetEnumerator()) {
@@ -42,7 +41,7 @@ if (-not $NexusMod) {
 $allowedLaunchers = if ($NexusMod) {
     @()
 } else {
-    @('Setup.cmd','Start-Mod.cmd','Stop-Mod.cmd','Uninstall.cmd')
+    @('Setup.cmd','Start-Mod.cmd','Uninstall.cmd')
 }
 $blocked = Get-ChildItem -LiteralPath $release -Recurse -File | Where-Object {
     $_.Extension -in '.cmd','.bat','.exe','.ps1','.vbs','.lnk','.msi' -and

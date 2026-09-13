@@ -20,9 +20,14 @@ static class Program
                 case "launch":
                     var config = Configuration.Read();
                     if (string.IsNullOrWhiteSpace(config.Game)) throw new InvalidOperationException("Run Setup.cmd first");
-                    using (AppHost.Launch("run")) { }
-                    if (ShouldAutoLaunchGame(config, args)) Process.Start(new ProcessStartInfo("steam://rungameid/2638890") { UseShellExecute = true });
-                    return 0;
+                    bool autoLaunchGame = ShouldAutoLaunchGame(config, args);
+                    foreach (string line in LaunchInstructions(autoLaunchGame)) Console.WriteLine(line);
+                    if (autoLaunchGame)
+                    {
+                        Console.WriteLine("Starting Onimusha: Way of the Sword from Steam...");
+                        Process.Start(new ProcessStartInfo("steam://rungameid/2638890") { UseShellExecute = true });
+                    }
+                    return Bridge.Run(args);
                 case "prepare-waves": PreparedWaves.Prepare(args.Contains("--force")); return 0;
                 case "diagnose":
                     Console.WriteLine($"Onimusha DualSense 1.1.2 / {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
@@ -58,4 +63,16 @@ static class Program
 
     internal static bool ShouldAutoLaunchGame(Configuration config, string[] args) =>
         config.AutoLaunchGame && !args.Contains("--no-game");
+
+    internal static string[] LaunchInstructions(bool autoLaunchGame) => autoLaunchGame
+        ? [
+            "The Onimusha DualSense MOD is running while this window is open.",
+            "To stop the MOD, close this window."
+        ]
+        : [
+            "The Onimusha DualSense MOD is running while this window is open.",
+            "To stop the MOD, close this window.",
+            "Automatic game launch is disabled.",
+            "Start Onimusha: Way of the Sword manually from Steam."
+        ];
 }

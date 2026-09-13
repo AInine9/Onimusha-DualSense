@@ -9,6 +9,13 @@ namespace OnimushaDualSense;
 static class Setup
 {
     const string Script = "onimusha_dualsense_bridge.lua";
+    internal static IReadOnlyList<string> ManualGamePrompt { get; } =
+    [
+        "The Onimusha game folder was not found automatically.",
+        "Enter the path to the game folder that contains OnimushaWotS.exe.",
+        "Do not enter the path to OnimushaWotS.exe itself.",
+        @"Example: C:\Program Files (x86)\Steam\steamapps\common\OnimushaWotS"
+    ];
     internal static readonly Dictionary<string, string> Resources = new()
     {
         ["natives/stm/gamedesign/system/adaptivetrigger/adaptivetriggersettingdata.user.3"] = "5a3299e925662dc5bb9c41905c82b90d50d0a340cef8eb8e5bc2129c3b52528b"
@@ -154,9 +161,14 @@ static class Setup
         if (!prepare && Files.GameRunning() != false) throw new InvalidOperationException("Close Onimusha before setup");
         var config = Configuration.Read();
         string? game = Option("--game") ?? (string.IsNullOrWhiteSpace(config.Game) ? Discover() : config.Game);
-        if (game == null) { Console.Write("Onimusha game folder (containing OnimushaWotS.exe): "); game = Console.ReadLine()?.Trim().Trim('"'); }
+        if (game == null)
+        {
+            foreach (string line in ManualGamePrompt) Console.WriteLine(line);
+            Console.Write("Game folder path: ");
+            game = Console.ReadLine()?.Trim().Trim('"');
+        }
         game = Path.GetFullPath(game ?? throw new InvalidOperationException("Game folder is required"));
-        if (!File.Exists(Path.Combine(game, "OnimushaWotS.exe"))) throw new InvalidDataException("OnimushaWotS.exe not found");
+        if (!File.Exists(Path.Combine(game, "OnimushaWotS.exe"))) throw new InvalidDataException($"OnimushaWotS.exe was not found in '{game}'. Enter the game folder containing the executable, not the executable path.");
         if (!prepare && !File.Exists(Path.Combine(game, "dinput8.dll"))) throw new InvalidOperationException("Install a compatible REFramework build first; see README");
         string pak = Path.GetFullPath(Option("--pak-tool") ?? Download("pak")), decoder = Path.GetFullPath(Option("--decoder") ?? Download("decoder"));
         string scratch = Files.Data("extract-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(scratch);
