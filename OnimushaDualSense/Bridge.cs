@@ -159,6 +159,12 @@ static class Bridge
     // Keep a margin below the one-second freshness watchdog when a write is delayed.
     const double ControlHeartbeatSeconds = .5;
     const double ControlWatchdogSeconds = 1.0;
+    const double SoulTriggerPulseSeconds = .22;
+    // Only the rift-sealing profile vibrates; the bow keeps its plain resistance.
+    const int SpawnerTriggerProfile = 1;
+    // In vibration mode the per-zone value is actuator force, so the profile
+    // powers are lifted to keep the trigger firm while it grinds.
+    const float SpawnerVibrationBoost = 1.5f;
 
     public static int Run(string[] args)
     {
@@ -178,6 +184,21 @@ static class Bridge
         var profiles = Files.Read(Files.Data("trigger_profiles.json"))["profiles"]!.AsArray().ToDictionary(p => p!["_Type"]!.GetValue<int>(), p => p!);
         var effects = profiles.ToDictionary(p => p.Key, p => Protocol.Feedback(
             p.Value["_PowerList"]!.AsArray().Select(n => n!.GetValue<float>()).ToArray(), config.AdaptiveTriggerStrength));
+        // Rift sealing is the spawner profile. A trigger runs one mode at a
+        // time, so vibration takes over that profile's resistance curve.
+        var spawner = profiles[SpawnerTriggerProfile];
+        byte[] spawnerVibration = Protocol.Vibration(
+            spawner["_PowerList"]!.AsArray().Select(n => Math.Min(1, n!.GetValue<float>() * SpawnerVibrationBoost)).ToArray(),
+            spawner["_Frequency"]!.GetValue<float>(), config.AdaptiveTriggerStrength * config.RiftVibration);
+        // Trigger vibration is only felt while the trigger is pressed, and the
+        // soul event carries no press position, so every zone stays active.
+        byte[] soulVibration = Protocol.Vibration([.5f, .6f, .7f, .8f, .8f, .8f, .7f, .6f, .5f, .45f],
+            .55f, config.AdaptiveTriggerStrength * config.SoulVibration);
+        // The gauntlet hum stays armed through gameplay: trigger vibration is
+        // only felt while the trigger is held, so the hardware gates it to
+        // exactly the time the gauntlet is drawing. Lowest audible amplitude.
+        byte[] gauntletHum = Protocol.Vibration([.12f, .12f, .12f, .12f, .12f, .12f, .12f, .12f, .12f, .12f],
+            .15f, config.AdaptiveTriggerStrength * config.GauntletVibration);
         var mixer = new Mixer(samples, config.Gain);
         var queue = new FeedbackQueue(mixer, extensions, Files.Log);
         var inbox = new Inbox();
@@ -216,6 +237,7 @@ static class Bridge
             JsonNode? state = null; Accepted? last = null;
             double began = Files.Now, nextProcess = 0, lastStatus = 0, lastControl = began, controlAttempt = double.NegativeInfinity;
             int lastTrigger = int.MinValue;
+            double soulPulseUntil = double.NegativeInfinity;
             bool? lastSuppress = null;
             while (!File.Exists(Files.Data("stop.request")))
             {
@@ -271,6 +293,7 @@ static class Bridge
                                         if (allowed)
                                         {
                                             if (ev["defense_kind"] is JsonNode defense) queue.SetDefense(defense.GetValue<string>(), now);
+                                            if (id == "soul") soulPulseUntil = now + SoulTriggerPulseSeconds;
                                             queue.Extended(id, ev["seq"]!.GetValue<long>(), ev["frame"]!.GetValue<long>(), now, ev["switches"], ev["technique"]?.GetValue<string>() ?? "", ev["defense_kind"]?.GetValue<string>());
                                         }
                                     }
@@ -298,14 +321,21 @@ static class Bridge
                         lastControl = now; lastSuppress = suppress;
                     }
                 }
-                if (now - lastControl > ControlWatchdogSeconds) { queue.Clear(); active = false; trigger = -1; suppress = false; }
+                if (now - lastControl > ControlWatchdogSeconds) { queue.Clear(); active = false; trigger = -1; suppress = false; soulPulseUntil = double.NegativeInfinity; }
                 if (trigger != lastTrigger) { Files.Log($"Trigger={trigger}; active={active}"); lastTrigger = trigger; }
                 byte[] right = Protocol.Off, left = Protocol.Off;
+                // Left-trigger vibration, most specific first: a native profile
+                // owns its trigger outright, then the absorption accent, then
+                // the idle gauntlet hum underneath both.
+                bool nativeOwnsLeft = false;
                 if (config.AdaptiveTriggers && effects.TryGetValue(trigger, out var effect))
                 {
+                    if (config.RiftVibration > 0 && trigger == SpawnerTriggerProfile) effect = spawnerVibration;
                     int which = profiles[trigger]["_Which"]!.GetValue<int>();
-                    if (which is 0 or 2) right = effect; if (which is 1 or 2) left = effect;
+                    if (which is 0 or 2) right = effect; if (which is 1 or 2) { left = effect; nativeOwnsLeft = true; }
                 }
+                if (config.AdaptiveTriggers && gameplay && !nativeOwnsLeft)
+                    left = now < soulPulseUntil ? soulVibration : gauntletHum;
                 hid.TrySend(Protocol.Report(right, left, suppress), now);
                 if (now - lastStatus > 2)
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
