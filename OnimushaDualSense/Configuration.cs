@@ -9,7 +9,7 @@ sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool
     {
         var config = File.Exists(Files.At("config.json")) ? Files.Read(Files.At("config.json")) : new JsonObject();
         float gain = config["gain"]?.GetValue<float>() ?? 1;
-        if (!float.IsFinite(gain) || gain < 0 || gain > 1) throw new InvalidDataException("gain must be between 0 and 1");
+        if (!float.IsFinite(gain) || gain < 0 || gain > 3) throw new InvalidDataException("gain must be between 0 and 3");
         bool adaptiveTriggers = config["adaptive_triggers"]?.GetValue<bool>() ?? true;
         float adaptiveTriggerStrength = config["adaptive_trigger_strength"]?.GetValue<float>() ?? 1;
         if (!float.IsFinite(adaptiveTriggerStrength) || adaptiveTriggerStrength < 0 || adaptiveTriggerStrength > 1) throw new InvalidDataException("adaptive_trigger_strength must be between 0 and 1");

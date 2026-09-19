@@ -33,7 +33,7 @@ Installation
 
 ## Configuration
 Edit `config.json` in the mod folder:
-- `gain` — Controls the overall haptic strength. The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
+- `gain` — Controls the overall haptic strength. The accepted range is `0.0` to `3.0`, and the default value is `1.0`.
 - `adaptive_triggers` —  it defaults to true, while false disables trigger resistance.
 - `adaptive_trigger_strength`  — The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
 - `auto_launch_game` — Whether to launch the game automatically when the mod starts. It defaults to `true`; set it to `false` to start the game manually from Steam after running `Start-Mod.cmd`.
