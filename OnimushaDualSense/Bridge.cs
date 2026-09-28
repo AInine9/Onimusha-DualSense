@@ -166,6 +166,15 @@ static class Bridge
     // powers are lifted to keep the trigger firm while it grinds.
     const float SpawnerVibrationBoost = 1.5f;
 
+    internal static byte[] SelectLeftTrigger(Configuration config, bool gameplay, bool nativeOwnsLeft,
+        double now, double lastControl, double soulPulseUntil, byte[] nativeLeft, byte[] soulVibration, byte[] gauntletHum)
+    {
+        // Gameplay snapshots can remain fresh while every control-file write fails.
+        if (!config.AdaptiveTriggers || now - lastControl > ControlWatchdogSeconds) return Protocol.Off;
+        if (nativeOwnsLeft || !gameplay) return nativeLeft;
+        return config.SoulVibration > 0 && now < soulPulseUntil ? soulVibration : gauntletHum;
+    }
+
     public static int Run(string[] args)
     {
         using var mutex = new Mutex(false, @"Local\OnimushaDualSenseBridge", out bool created);
@@ -334,8 +343,8 @@ static class Bridge
                     int which = profiles[trigger]["_Which"]!.GetValue<int>();
                     if (which is 0 or 2) right = effect; if (which is 1 or 2) { left = effect; nativeOwnsLeft = true; }
                 }
-                if (config.AdaptiveTriggers && gameplay && !nativeOwnsLeft)
-                    left = now < soulPulseUntil ? soulVibration : gauntletHum;
+                left = SelectLeftTrigger(config, gameplay, nativeOwnsLeft, now, lastControl,
+                    soulPulseUntil, left, soulVibration, gauntletHum);
                 hid.TrySend(Protocol.Report(right, left, suppress), now);
                 if (now - lastStatus > 2)
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
