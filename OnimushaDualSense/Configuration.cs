@@ -3,7 +3,7 @@ using System.Globalization;
 
 namespace OnimushaDualSense;
 
-sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool AutoLaunchGame, float AdaptiveTriggerStrength = 1)
+sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool AutoLaunchGame, float AdaptiveTriggerStrength = 1, float GauntletVibration = 1, float SoulVibration = 1, float RiftVibration = 1)
 {
     public static Configuration Read()
     {
@@ -14,7 +14,8 @@ sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool
         float adaptiveTriggerStrength = config["adaptive_trigger_strength"]?.GetValue<float>() ?? 1;
         if (!float.IsFinite(adaptiveTriggerStrength) || adaptiveTriggerStrength < 0 || adaptiveTriggerStrength > 1) throw new InvalidDataException("adaptive_trigger_strength must be between 0 and 1");
         bool autoLaunchGame = config["auto_launch_game"]?.GetValue<bool>() ?? true;
-        return new(config["game"]?.GetValue<string>() ?? "", gain, adaptiveTriggers, autoLaunchGame, adaptiveTriggerStrength);
+        return new(config["game"]?.GetValue<string>() ?? "", gain, adaptiveTriggers, autoLaunchGame, adaptiveTriggerStrength,
+            Strength(config, "gauntlet_vibration"), Strength(config, "soul_vibration"), Strength(config, "rift_vibration"));
     }
     public void Save()
     {
@@ -24,9 +25,19 @@ sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool
             ["gain"] = Number(Gain),
             ["adaptive_triggers"] = AdaptiveTriggers,
             ["adaptive_trigger_strength"] = Number(AdaptiveTriggerStrength),
+            ["gauntlet_vibration"] = Number(GauntletVibration),
+            ["soul_vibration"] = Number(SoulVibration),
+            ["rift_vibration"] = Number(RiftVibration),
             ["auto_launch_game"] = AutoLaunchGame
         };
         Files.Save(Files.At("config.json"), config);
+    }
+
+    static float Strength(JsonNode config, string key)
+    {
+        float value = config[key]?.GetValue<float>() ?? 1;
+        if (!float.IsFinite(value) || value < 0 || value > 1) throw new InvalidDataException($"{key} must be between 0 and 1");
+        return value;
     }
 
     static JsonNode Number(float value) => JsonNode.Parse(value.ToString("0.0#########", CultureInfo.InvariantCulture))!;

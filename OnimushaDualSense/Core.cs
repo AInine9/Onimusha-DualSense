@@ -74,7 +74,11 @@ sealed class GameLifetime
 static class Protocol
 {
     public static readonly byte[] Off = [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    public static byte[] Feedback(float[] powers, float strengthMultiplier = 1)
+    // The game profile frequency is normalized like every field beside it.
+    // This band keeps it inside the range the trigger actuator can render:
+    // below it nothing is felt, above it the grind turns into a buzz.
+    const int MinimumVibrationHertz = 8, MaximumVibrationHertz = 60;
+    static (uint Mask, uint Packed) Pack(float[] powers, float strengthMultiplier)
     {
         if (powers.Length != 10) throw new InvalidDataException("Expected ten trigger zones");
         if (!float.IsFinite(strengthMultiplier) || strengthMultiplier < 0 || strengthMultiplier > 1) throw new InvalidDataException("Invalid trigger strength multiplier");
@@ -86,9 +90,27 @@ static class Protocol
             int strength = Math.Min(8, (int)(p * strengthMultiplier * 8 + .5));
             if (strength > 0) { mask |= 1u << i; packed |= (uint)(strength - 1) << (i * 3); }
         }
+        return (mask, packed);
+    }
+    public static byte[] Feedback(float[] powers, float strengthMultiplier = 1)
+    {
+        var (mask, packed) = Pack(powers, strengthMultiplier);
         if (mask == 0) return Off;
         byte[] result = new byte[11]; result[0] = 0x21;
         BitConverter.GetBytes((ushort)mask).CopyTo(result, 1); BitConverter.GetBytes(packed).CopyTo(result, 3);
+        return result;
+    }
+    // Multiple-position vibration. Replaces the resistance curve on that
+    // trigger; the two modes cannot run on the same trigger at once.
+    public static byte[] Vibration(float[] powers, float frequency, float strengthMultiplier = 1)
+    {
+        if (!float.IsFinite(frequency) || frequency < 0 || frequency > 1) throw new InvalidDataException("Invalid trigger frequency");
+        var (mask, packed) = Pack(powers, strengthMultiplier);
+        if (mask == 0) return Off;
+        byte[] result = new byte[11]; result[0] = 0x26;
+        BitConverter.GetBytes((ushort)mask).CopyTo(result, 1); BitConverter.GetBytes(packed).CopyTo(result, 3);
+        // The vibration frequency lives at byte 9; bytes 7, 8 and 10 are unused.
+        result[9] = (byte)(MinimumVibrationHertz + (int)(frequency * (MaximumVibrationHertz - MinimumVibrationHertz) + .5));
         return result;
     }
     public static byte[] Report(byte[]? right = null, byte[]? left = null, bool audio = true)

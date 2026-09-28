@@ -36,6 +36,11 @@ Edit `config.json` in the mod folder:
 - `gain` — Controls the overall haptic strength. The accepted range is `0.0` to `3.0`, and the default value is `1.0`.
 - `adaptive_triggers` —  it defaults to true, while false disables trigger resistance.
 - `adaptive_trigger_strength`  — The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
+- `gauntlet_vibration` — Strength of the faint L2 hum felt while the gauntlet is drawing. The accepted range is `0.0` to `1.0`, and the default value is `1.0`. The effect stays armed throughout gameplay and is only felt while L2 is held, because trigger vibration needs the trigger pressed.
+- `soul_vibration` — Strength of the L2 pulse played when souls are absorbed. The accepted range is `0.0` to `1.0`, and the default value is `1.0`.
+- `rift_vibration` — Strength of the L2 vibration while a rift is being sealed. The accepted range is `0.0` to `1.0`, and the default value is `1.0`. A trigger plays one effect mode at a time, so this vibration takes the place of the resistance the rift profile would otherwise apply; set it to `0` to keep that resistance. The bow keeps its resistance either way.
+
+  All three are ignored when `adaptive_triggers` is `false`, and all three scale with `adaptive_trigger_strength`. The trigger has eight strength steps, so low values can round down to silence.
 - `auto_launch_game` — Whether to launch the game automatically when the mod starts. It defaults to `true`; set it to `false` to start the game manually from Steam after running `Start-Mod.cmd`.
 
 ## Uninstall
