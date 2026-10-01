@@ -251,6 +251,7 @@ sealed class Hid : IHidOutput, IBluetoothHapticsOutput
 
 sealed class HidRecovery : IDisposable
 {
+    const double ControlHeartbeatSeconds = .5;
     readonly Func<IHidOutput> factory;
     readonly Action<string> log;
     readonly object gate = new();
@@ -258,7 +259,13 @@ sealed class HidRecovery : IDisposable
     double nextOpen;
     double backoff = .5;
     bool bluetoothHapticsInitialized;
+    byte[]? lastReport;
+    double lastReportTime = double.NegativeInfinity;
+    long controlWrites, coalescedReports;
     bool disposed;
+
+    public long ControlWrites { get { lock (gate) return controlWrites; } }
+    public long CoalescedReports { get { lock (gate) return coalescedReports; } }
 
     public HidRecovery(Func<IHidOutput> factory, Action<string> log)
         : this(null, factory, log) { }
@@ -278,7 +285,17 @@ sealed class HidRecovery : IDisposable
             if (!EnsureOpen(now)) return false;
             try
             {
+                // Control effects persist on the device. Reissuing the same
+                // vibration mode every 8 ms adds HID traffic and competes with
+                // the Bluetooth PCM worker for this lock. PCM is never coalesced.
+                if (lastReport != null && report.AsSpan().SequenceEqual(lastReport)
+                    && now >= lastReportTime && now - lastReportTime < ControlHeartbeatSeconds)
+                {
+                    coalescedReports++;
+                    return true;
+                }
                 output!.Send(report);
+                lastReport = report.ToArray(); lastReportTime = now; controlWrites++;
                 backoff = .5;
                 return true;
             }
@@ -305,6 +322,8 @@ sealed class HidRecovery : IDisposable
                 {
                     haptics.SendBluetoothHapticsState();
                     bluetoothHapticsInitialized = true;
+                    // Initialization can overwrite common device state.
+                    lastReport = null;
                     log("Bluetooth HID haptics initialized; direct PCM stream active.");
                 }
                 haptics.SendBluetoothHaptics(stereo8);
@@ -347,6 +366,7 @@ sealed class HidRecovery : IDisposable
             candidate.Send(Protocol.Report(audio: false));
             output = candidate;
             bluetoothHapticsInitialized = false;
+            lastReport = null;
             backoff = .5;
             log("DualSense HID output opened; both triggers released.");
             return true;
@@ -364,6 +384,7 @@ sealed class HidRecovery : IDisposable
         lock (gate)
         {
             if (output == null) return;
+            lastReport = null;
             try { output.Send(Protocol.Report(audio: false)); }
             catch (Win32Exception e) { log($"DualSense HID release failed; native error {e.NativeErrorCode}: {e.Message}"); }
         }
@@ -382,6 +403,7 @@ sealed class HidRecovery : IDisposable
 
     void ReleaseCurrentOutput()
     {
+        lastReport = null;
         if (output == null) return;
         var current = output;
         output = null;
@@ -393,6 +415,7 @@ sealed class HidRecovery : IDisposable
 
     void ReleaseFailedOutput()
     {
+        lastReport = null;
         var failed = output;
         output = null;
         bluetoothHapticsInitialized = false;
@@ -443,6 +466,28 @@ static class Focus
     }
 }
 
+sealed class AudioProgressWatchdog
+{
+    const double StallSeconds = 1, LatencyGrowthSeconds = .10, SustainedGrowthSeconds = 1;
+    double? baseline, slowSince;
+
+    public string? Check(double now, double lastCallback, double latency, double expectedLatency)
+    {
+        if (now - lastCallback > StallSeconds) return "Audio callback stopped advancing for over one second";
+        if (!double.IsFinite(latency) || latency <= 0) { slowSince = null; return null; }
+        double healthy = Math.Max(expectedLatency, latency);
+        baseline = baseline == null ? healthy : Math.Min(baseline.Value, healthy);
+        if (latency - baseline.Value > LatencyGrowthSeconds)
+        {
+            slowSince ??= now;
+            if (now - slowSince.Value >= SustainedGrowthSeconds)
+                return $"Audio output latency grew to {latency * 1000:0} ms (baseline {baseline.Value * 1000:0} ms)";
+        }
+        else slowSince = null;
+        return null;
+    }
+}
+
 sealed class Audio : IDisposable
 {
     const string Dll = "libportaudio64bit.dll";
@@ -450,6 +495,7 @@ sealed class Audio : IDisposable
     { public int Version; public nint Name; public int HostApi, Inputs, Outputs; public double LowInput, LowOutput, HighInput, HighOutput, Rate; }
     [StructLayout(LayoutKind.Sequential)] struct HostInfo { public int Version, Type; public nint Name; public int Count, Input, Output; }
     [StructLayout(LayoutKind.Sequential)] struct Parameters { public int Device, Channels; public uint Format; public double Latency; public nint Specific; }
+    [StructLayout(LayoutKind.Sequential)] struct CallbackTiming { public double Input, Current, Output; }
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int Callback(nint input, nint output, uint frames, nint timing, uint flags, nint user);
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int Pa_Initialize();
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)] static extern int Pa_Terminate();
@@ -468,9 +514,14 @@ sealed class Audio : IDisposable
     bool initialized;
     int underflows;
     Exception? error;
+    readonly AudioProgressWatchdog progress = new();
+    double lastCallback = Files.Now, callbackLatency = double.NaN, expectedLatency;
     public int Underflows => Volatile.Read(ref underflows);
     static void Check(int code) { if (code < 0) throw new InvalidOperationException($"PortAudio {code}: {Marshal.PtrToStringUTF8(Pa_GetErrorText(code))}"); }
-    public double OutputLatency { get; private set; }
+    public double OutputLatency
+    {
+        get { double value = Volatile.Read(ref callbackLatency); return double.IsFinite(value) && value > 0 ? value : expectedLatency; }
+    }
     public static bool IsDualSenseOutputName(string name) =>
         name.Contains("DualSense", StringComparison.OrdinalIgnoreCase)
         || name.Equals("Wireless Controller", StringComparison.OrdinalIgnoreCase);
@@ -504,7 +555,14 @@ sealed class Audio : IDisposable
             {
                 if (frames != 256) throw new InvalidOperationException("Unexpected audio buffer size");
                 if (flags != 0) Interlocked.Increment(ref underflows);
-                mixer.Fill(buffer, (int)frames);
+                double now = Files.Now;
+                Volatile.Write(ref lastCallback, now);
+                if (timing != 0)
+                {
+                    var time = Marshal.PtrToStructure<CallbackTiming>(timing);
+                    Volatile.Write(ref callbackLatency, time.Output - time.Current);
+                }
+                mixer.Fill(buffer, (int)frames, now);
                 if (normalOutput) { for (int i = 0; i < 256; i++) { stereo[i * 2] = buffer[i * 4 + 2]; stereo[i * 2 + 1] = buffer[i * 4 + 3]; } Marshal.Copy(stereo, 0, output, stereo.Length); }
                 else Marshal.Copy(buffer, 0, output, buffer.Length);
                 return 0;
@@ -525,7 +583,10 @@ sealed class Audio : IDisposable
             if (found.Count != 1) throw new InvalidOperationException($"Expected one four-channel DualSense WASAPI device; found {found.Count}");
             var parameters = new Parameters { Device = found[0].Index, Channels = normalOutput ? 2 : 4, Format = 1, Latency = found[0].Info.LowOutput };
             Check(Pa_OpenStream(out stream, 0, ref parameters, 48000, 256, 0, callback, 0)); Check(Pa_StartStream(stream));
-            OutputLatency = Marshal.PtrToStructure<StreamInfo>(Pa_GetStreamInfo(stream)).OutputLatency;
+            expectedLatency = Marshal.PtrToStructure<StreamInfo>(Pa_GetStreamInfo(stream)).OutputLatency;
+            // Discovery/open can be slow. Give a newly started stream its full
+            // progress window rather than timing it from object construction.
+            lastCallback = Files.Now;
         }
         catch { Dispose(); throw; }
     }
@@ -539,6 +600,11 @@ sealed class Audio : IDisposable
             catch (InvalidOperationException e) { throw new AudioDeviceUnavailableException(e.Message, e); }
         }
         if (state == 0) throw new AudioDeviceUnavailableException("Audio device disconnected or stopped");
+        // An active PortAudio stream can still stop making progress or build
+        // latency. Reuse the existing sink recovery path in both cases.
+        string? failure = progress.Check(Files.Now, Volatile.Read(ref lastCallback),
+            Volatile.Read(ref callbackLatency), expectedLatency);
+        if (failure != null) throw new AudioDeviceUnavailableException(failure);
     }
     public void Dispose()
     {

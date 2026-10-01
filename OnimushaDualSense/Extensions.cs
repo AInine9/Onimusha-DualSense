@@ -211,8 +211,9 @@ sealed class ExtendedEffects
     }
 }
 
-sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> log)
+sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> log, Func<double>? clock = null)
 {
+    readonly Func<double> readClock = clock ?? (() => Files.Now);
     record Request(string Id, long Sequence, long Frame, double Time, ExtraEffect Extra, bool Layer = false, string Technique = "", bool Contact = false, bool ParryContact = false, bool GuardSource = false);
     readonly List<Request> pending = [];
     readonly Dictionary<string, double> cooldowns = [];
@@ -386,8 +387,9 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
     }
     public void Dispatch(bool acknowledged, double now)
     {
-        foreach (var expired in pending.Where(p => now - p.Time >= .20)) Skip(expired.Extra.Id, "expired_waiting_ack", expired.Sequence, expired.Frame);
-        pending.RemoveAll(p => now - p.Time >= .20);
+        double began = readClock();
+        foreach (var expired in pending.Where(p => now - p.Time >= Inbox.EventLifetimeSeconds)) Skip(expired.Extra.Id, "expired_waiting_ack", expired.Sequence, expired.Frame);
+        pending.RemoveAll(p => now - p.Time >= Inbox.EventLifetimeSeconds);
         if (!acknowledged) return;
         foreach (var p in pending)
         {
@@ -404,7 +406,12 @@ sealed class FeedbackQueue(Mixer mixer, ExtendedEffects effects, Action<string> 
             {
                 recentGuard = p;
             }
-            if (!mixer.Play(selected, level: p.Layer ? .6f : 1)) continue;
+            bool Fresh() => now + Math.Max(0, readClock() - began) - p.Time < Inbox.EventLifetimeSeconds;
+            if (!mixer.Play(selected, level: p.Layer ? .6f : 1, canStart: Fresh))
+            {
+                if (!Fresh()) Skip(p.Extra.Id, "expired_loading_sample", p.Sequence, p.Frame);
+                continue;
+            }
             if (!p.Layer) { activeBaseFriction = friction; activeBaseOwner = friction ? p.Extra.Id : null; }
             if (friction) { TrackParryVoice(p.Extra.Id, selected); ParryPlays++; }
             { ExtraPlays[p.Extra.Id] = ExtraPlays.GetValueOrDefault(p.Extra.Id) + 1; SampleEventLog("play:" + p.Extra.Id, $"Extended haptic PLAY id={(p.Technique.Length > 0 ? p.Technique + "_" : friction && !p.Extra.Id.StartsWith("defense_") ? "parry_" : "")}{p.Extra.Id} event={p.Sequence} frame={p.Frame} sample={selected} layer={p.Layer}"); }

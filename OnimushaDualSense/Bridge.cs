@@ -248,17 +248,19 @@ static class Bridge
             int lastTrigger = int.MinValue;
             double soulPulseUntil = double.NegativeInfinity;
             bool? lastSuppress = null;
+            bool? lastOutputEnabled = null;
             while (!File.Exists(Files.Data("stop.request")))
             {
                 double now = Files.Now;
                 outputs.Update(now);
+                now = Files.Now;
 #if DEVELOPER
                 audition.Read(samples, queue, now);
                 if (audition.Active)
                 {
                     outputEnabled = false;
-                    if (lastSuppress != true || now - lastControl > ControlHeartbeatSeconds)
-                        if (WriteControl(true)) { lastSuppress = true; lastControl = now; }
+                    if (lastSuppress != true || lastOutputEnabled != false || now - lastControl > ControlHeartbeatSeconds)
+                        if (WriteControl(true)) { lastSuppress = true; lastOutputEnabled = false; lastControl = Files.Now; }
                     bool freshGame = (DateTime.UtcNow - File.GetLastWriteTimeUtc(statePath)).TotalSeconds < .75;
                     bool ack = false;
                     if (freshGame) try { ack = Files.Read(statePath)["legacy_suppressed"]?.GetValue<bool>() == true; } catch (Exception e) when (ReadableError(e)) { }
@@ -278,7 +280,10 @@ static class Bridge
                 {
                     if ((DateTime.UtcNow - File.GetLastWriteTimeUtc(statePath)).TotalSeconds < .75)
                     {
-                        var next = reader.ReadChanged(statePath); var accepted = next == null ? null : inbox.Accept(next, now);
+                        var next = reader.ReadChanged(statePath);
+                        now = Files.Now;
+                        var accepted = next == null ? null : inbox.Accept(next, now,
+                            Math.Max(0, (DateTime.UtcNow - reader.LastWriteTimeUtc).TotalSeconds));
                         if (accepted != null)
                         {
                             state = next!; last = accepted;
@@ -301,9 +306,10 @@ static class Bridge
                                             ? accepted.UiAllowed : accepted.Active && state["gameplay_allowed"]?.GetValue<bool>() == true;
                                         if (allowed)
                                         {
+                                            double eventTime = now - Inbox.EventAge(state, ev, accepted.SnapshotAge);
                                             if (ev["defense_kind"] is JsonNode defense) queue.SetDefense(defense.GetValue<string>(), now);
-                                            if (id == "soul") soulPulseUntil = now + SoulTriggerPulseSeconds;
-                                            queue.Extended(id, ev["seq"]!.GetValue<long>(), ev["frame"]!.GetValue<long>(), now, ev["switches"], ev["technique"]?.GetValue<string>() ?? "", ev["defense_kind"]?.GetValue<string>());
+                                            if (id == "soul") soulPulseUntil = eventTime + SoulTriggerPulseSeconds;
+                                            queue.Extended(id, ev["seq"]!.GetValue<long>(), ev["frame"]!.GetValue<long>(), eventTime, ev["switches"], ev["technique"]?.GetValue<string>() ?? "", ev["defense_kind"]?.GetValue<string>());
                                         }
                                     }
                                 }
@@ -311,6 +317,7 @@ static class Bridge
                     }
                 }
                 catch (Exception e) when (ReadableError(e)) { }
+                now = Files.Now;
                 bool active = last != null && now - inbox.Last < .75 && last.Active && focus;
                 bool uiAllowed = last != null && now - inbox.Last < .75 && last.UiAllowed && focus;
                 bool gameplay = active && state?["gameplay_allowed"]?.GetValue<bool>() == true;
@@ -319,18 +326,28 @@ static class Bridge
                 outputEnabled = config.Gain > 0 && soundOutputAvailable && (active || uiAllowed);
                 queue.SetDefense(gameplay ? state?["defense_kind"]?.GetValue<string>() ?? "none" : "none", now);
                 queue.SetActivity(config.Gain > 0 && soundOutputAvailable && gameplay, config.Gain > 0 && soundOutputAvailable && uiAllowed);
-                queue.Dispatch(state?["legacy_suppressed"]?.GetValue<bool>() == true, now);
+                queue.Dispatch(state?["legacy_suppressed"]?.GetValue<bool>() == true, Files.Now);
                 bool suppress = soundOutputAvailable && queue.RequiresSuppression(gameplay, uiAllowed, now);
-                if ((suppress != lastSuppress || now - lastControl > ControlHeartbeatSeconds) && now - controlAttempt >= .05)
+                // Sink recovery must disable Lua's pre-suppression promptly,
+                // even when the suppression request was already false.
+                if ((suppress != lastSuppress || outputEnabled != lastOutputEnabled || now - lastControl > ControlHeartbeatSeconds)
+                    && now - controlAttempt >= .05)
                 {
                     controlAttempt = now;
                     if (WriteControl(suppress))
                     {
+                        lastControl = Files.Now;
                         if (suppress != lastSuppress) Files.Log($"Suppression request={suppress}");
-                        lastControl = now; lastSuppress = suppress;
+                        lastSuppress = suppress;
+                        lastOutputEnabled = outputEnabled;
                     }
                 }
-                if (now - lastControl > ControlWatchdogSeconds) { queue.Clear(); active = false; trigger = -1; suppress = false; soulPulseUntil = double.NegativeInfinity; }
+                now = Files.Now;
+                if (now - lastControl > ControlWatchdogSeconds || now - inbox.Last >= .75)
+                {
+                    queue.Clear(); active = false; gameplay = false; trigger = -1; suppress = false;
+                    soulPulseUntil = double.NegativeInfinity;
+                }
                 if (trigger != lastTrigger) { Files.Log($"Trigger={trigger}; active={active}"); lastTrigger = trigger; }
                 byte[] right = Protocol.Off, left = Protocol.Off;
                 // Left-trigger vibration, most specific first: a native profile
@@ -350,7 +367,11 @@ static class Bridge
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
                         extended_audio_active = mixer.Playing, defense_kind = queue.DefenseKind, parry_plays = queue.ParryPlays,
                         skipped_extensions = queue.Skipped, suppression_requested = suppress, sound_reference_events = extensions.SoundEvents.Count,
-                        audio_underflows = outputs.AudioUnderflows, session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
+                        audio_underflows = outputs.AudioUnderflows, output_latency_ms = outputs.OutputLatency * 1000,
+                        output_skipped_frames = mixer.SkippedFrames, control_writes = hid.ControlWrites,
+                        control_reports_coalesced = hid.CoalescedReports, stale_events_dropped = inbox.StaleEvents,
+                        lua_stale_events_dropped = state?["stale_events_dropped"]?.DeepClone(),
+                        session = inbox.Session, heartbeat_age = now - inbox.Last, lua_errors = state?["errors"]?.DeepClone() })) lastStatus = now;
                 if (seconds > 0 && now - began >= seconds) break;
                 Thread.Sleep(CompanionLoopSleepMilliseconds);
             }

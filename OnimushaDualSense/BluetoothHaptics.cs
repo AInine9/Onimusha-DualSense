@@ -123,7 +123,7 @@ sealed class BluetoothHaptics : IDisposable
 
             try
             {
-                mixer.Fill(source, SourceFrames);
+                mixer.Fill(source, SourceFrames, now);
                 BuildStereo8(source, stereo8);
                 hid.TrySendBluetoothHaptics(stereo8, now);
             }

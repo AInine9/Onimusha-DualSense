@@ -3,6 +3,13 @@ local path = 'onimusha_dualsense_bridge.json'
 local enabled, frames, sequence, event_id = true, 0, 0, 0
 local candidate, checking, events, errors = -1, false, {}, {}
 local session = tostring(os.time()) .. ':' .. tostring(os.clock())
+local event_lifetime, stale_events_dropped = .20, 0
+local function event_clock()
+    -- REFramework runs on Windows, where the CRT clock measures elapsed time.
+    -- Keep legacy frame-based handling if that clock becomes unavailable.
+    local value=os.clock()
+    return value>=0 and value or nil
+end
 local counters = {adaptive=0, bow=0, spawner=0}
 local original_feedback, native_feedback = nil, nil
 local control, suppressed = nil, false
@@ -56,6 +63,7 @@ local last_dump_suppressed, last_dump_trigger, last_dump_defense = nil, nil, nil
 local sound_pending, player_sound_object = {}, nil
 local contact_frame, defense_frame, sound_step_frame, sound_side = -1000, -1000, -1000, false
 local pre_suppress_until = -1
+local pre_suppress_clock = nil
 local native_bow, bow_until, bow_owner = false, -1, nil
 local bow_counts = {starts=0,combat_releases=0,other_releases=0,blocked_steps=0,blocked_other=0}
 local bow_last_reason = 'none'
@@ -129,7 +137,7 @@ local function set_native_suppression(wanted)
 end
 local function emit(kind, id, metadata)
     event_id = event_id + 1
-    local item={seq=event_id, kind=kind, id=id or 0, frame=frames}
+    local item={seq=event_id, kind=kind, id=id or 0, frame=frames, clock=event_clock()}
     if metadata then for key,value in pairs(metadata) do item[key]=value end end
     events[#events+1] = item
     if #events > 128 then table.remove(events,1) end
@@ -199,7 +207,10 @@ local function extra(id, minimum_frames, metadata, family)
     extra_last[id]=frames
     extra_counts[id]=(extra_counts[id] or 0)+1
     note_extended_delta(id,extra_counts[id])
-    if control and control.output_enabled==true then pre_suppress_until=frames+4 end
+    if control and control.output_enabled==true then
+        pre_suppress_until=frames+4
+        local now=event_clock(); pre_suppress_clock=now and now+event_lifetime or nil
+    end
     emit('extended',id,metadata)
 end
 local function entity_is_player(args)
@@ -454,6 +465,17 @@ re.on_application_entry('LateUpdateBehavior', function()
     gameplay_allowed=false; ui_allowed=false
     defense_kind='none'; defense_state=0
     safe(function()
+        -- Expired starts cannot be played by the companion. Remove them even
+        -- while its ACK is stalled so they do not bloat every game-thread write.
+        local now=event_clock()
+        local retained=0
+        for i=1,#events do
+            local event=events[i]
+            if event.kind=='extended' and now and event.clock and now-event.clock>=event_lifetime then
+                stale_events_dropped=stale_events_dropped+1
+            else retained=retained+1; events[retained]=event end
+        end
+        for i=#events,retained+1,-1 do events[i]=nil end
         -- Read the companion control file immediately once, then at a small
         -- fixed cadence to avoid storage-backed JSON work every game frame.
         if frames-last_control_read>=control_read_interval then
@@ -548,8 +570,10 @@ re.on_application_entry('LateUpdateBehavior', function()
             end
         else sound_pending={}; player_sound_object=nil end
         local age=control and control.timestamp and os.time()-control.timestamp or 100
+        local now=event_clock()
+        local pre_suppress_fresh=not now or not pre_suppress_clock or now<pre_suppress_clock
         set_native_suppression(not native_bow and enabled and control and age>=0 and age<=2 and
-            (control.suppress_legacy==true or (control.output_enabled==true and frames<=pre_suppress_until)))
+            (control.suppress_legacy==true or (control.output_enabled==true and frames<=pre_suppress_until and pre_suppress_fresh)))
     end)
     -- Publish new events on the next update. State changes that affect the
     -- companion's output are also immediate; only unchanged idle state uses
@@ -563,13 +587,13 @@ re.on_application_entry('LateUpdateBehavior', function()
         sequence=sequence+1
         local wrote=false
         safe(function()
-            local snapshot={version=3,session=session,seq=sequence,frame=frames,
+            local snapshot={version=3,session=session,seq=sequence,frame=frames,clock=event_clock(),
             enabled=enabled,paused=paused,trigger=candidate,events=events,counters=counters,errors=errors,
             ui_allowed=ui_allowed,gameplay_allowed=gameplay_allowed,native_bow=native_bow,
             defense_kind=defense_kind,defense_state=defense_state,
             bow_counts=bow_counts,bow_last_reason=bow_last_reason,
             extended_hooks=extra_hooks,
-            legacy_suppressed=suppressed,native_feedback=native_feedback}
+            legacy_suppressed=suppressed,native_feedback=native_feedback,stale_events_dropped=stale_events_dropped}
             if next(extended_delta)~=nil then snapshot.extended_counts_delta=extended_delta end
             if metrics_due then snapshot.extended_counts=extra_counts; snapshot.metrics_frame=frames end
             if trace_enabled(defense_kind) then snapshot.defense_trace=trace_entries; snapshot.defense_trace_dropped=trace_dropped end

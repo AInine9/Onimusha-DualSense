@@ -45,6 +45,7 @@ static class Files
 sealed class ChangedJsonReader
 {
     (DateTime Time, long Length)? previous;
+    public DateTime LastWriteTimeUtc { get; private set; }
     public JsonNode? ReadChanged(string path)
     {
         var info = new FileInfo(path);
@@ -54,6 +55,7 @@ sealed class ChangedJsonReader
         info.Refresh();
         if (stamp != (info.LastWriteTimeUtc, info.Length)) return null;
         previous = stamp; // A failed or partial read must remain retryable.
+        LastWriteTimeUtc = stamp.LastWriteTimeUtc;
         return value;
     }
 }
@@ -120,15 +122,27 @@ static class Protocol
     }
 }
 
-record Accepted(int Trigger, JsonNode[] Events, bool Active, bool UiAllowed = false, bool NativeBow = false);
+record Accepted(int Trigger, JsonNode[] Events, bool Active, bool UiAllowed = false, bool NativeBow = false, double SnapshotAge = 0);
 sealed class Inbox
 {
+    public const double EventLifetimeSeconds = .20;
     public string? Session;
     public double Last;
     long seq = -1, lastEvent;
     public long LastEvent => lastEvent;
-    public Accepted? Accept(JsonNode state, double now)
+    public long StaleEvents { get; private set; }
+    public static double EventAge(JsonNode state, JsonNode ev, double snapshotAge)
     {
+        // Only subtract clocks from the same Lua process. File age adds the
+        // time since publication without comparing Lua and companion clocks.
+        double age = snapshotAge;
+        if (state["clock"] is JsonNode sent && ev["clock"] is JsonNode emitted)
+            age += Math.Max(0, sent.GetValue<double>() - emitted.GetValue<double>());
+        return age;
+    }
+    public Accepted? Accept(JsonNode state, double now, double snapshotAge = 0)
+    {
+        if (!double.IsFinite(snapshotAge) || snapshotAge < 0) throw new InvalidDataException("Invalid snapshot age");
         int version = state["version"]!.GetValue<int>();
         if (version is not (1 or 2 or 3)) throw new InvalidDataException("Unsupported bridge protocol");
         string session = state["session"]!.ToJsonString();
@@ -144,10 +158,11 @@ sealed class Inbox
         var events = state["events"]?.AsArray().Where(e => e!["seq"]!.GetValue<long>() > lastEvent).Select(e => e!).ToArray() ?? [];
         var fresh = events.Where(e => frame - e["frame"]!.GetValue<long>() is >= 0 and <= 8 &&
             ((active && !nativeBow) || (!nativeBow && uiAllowed && e["kind"]?.ToString() == "extended" && e["id"]?.ToString().StartsWith("ui_", StringComparison.Ordinal) == true) || e["kind"]?.ToString() == "stop")).ToArray();
+        var timely = fresh.Where(e => e["kind"]?.ToString() != "extended" || EventAge(state, e, snapshotAge) < EventLifetimeSeconds).ToArray();
         int trigger = active ? state["trigger"]?.GetValue<int>() ?? -1 : -1;
-        seq = next; Last = now;
+        seq = next; Last = now - snapshotAge; StaleEvents += fresh.Length - timely.Length;
         if (events.Length > 0) lastEvent = events.Max(e => e["seq"]!.GetValue<long>());
-        return new(trigger, fresh, active && version >= 2, uiAllowed, nativeBow);
+        return new(trigger, timely, active && version >= 2, uiAllowed, nativeBow, snapshotAge);
     }
 }
 
@@ -179,19 +194,25 @@ static class Wave
 
 }
 
-sealed class Mixer(IDictionary<string, float[]> samples, float gain)
+sealed class Mixer(IDictionary<string, float[]> samples, float gain, Func<double>? clock = null)
 {
     readonly object gate = new();
-    readonly List<(string Id, float[] Data, int Pos, float Level)> voices = [];
+    readonly Func<double> readClock = clock ?? (() => Files.Now);
+    readonly List<(string Id, float[] Data, int Pos, float Level, double StartedAt)> voices = [];
+    long skippedFrames;
+    public long SkippedFrames => Interlocked.Read(ref skippedFrames);
     public bool Playing { get { lock (gate) return voices.Count > 0; } }
-    public bool Play(string id, int delayFrames = 0, float level = 1)
+    public bool Play(string id, int delayFrames = 0, float level = 1, Func<bool>? canStart = null)
     {
         if (!samples.TryGetValue(id, out var data)) return false;
         lock (gate)
         {
+            // A cache miss can block on disk. Recheck freshness after loading.
+            if (canStart != null && !canStart()) return false;
             if (voices.Any(v => v.Id == id)) return false;
             if (voices.Count == 16) voices.RemoveAt(0);
-            voices.Add((id, data, -Math.Max(0, delayFrames) * 2, level)); return true;
+            int delay = Math.Max(0, delayFrames);
+            voices.Add((id, data, -delay * 2, level, readClock() + delay / 48000.0)); return true;
         }
     }
     public void Stop() { lock (gate) voices.Clear(); }
@@ -204,7 +225,7 @@ sealed class Mixer(IDictionary<string, float[]> samples, float gain)
             if (index < 0) return false;
             var voice = voices[index];
             if (voice.Pos >= data.Length) return false;
-            voices[index] = (replacement, data, voice.Pos, voice.Level); return true;
+            voices[index] = (replacement, data, voice.Pos, voice.Level, voice.StartedAt); return true;
         }
     }
     public void FadeOut(string id)
@@ -218,24 +239,38 @@ sealed class Mixer(IDictionary<string, float[]> samples, float gain)
             int count = Math.Min(768, voice.Data.Length - voice.Pos);
             var tail = new float[count];
             for (int i = 0; i < count; i++) tail[i] = voice.Data[voice.Pos + i] * (1 - (i / 2) / (float)Math.Max(1, count / 2 - 1));
-            voices[index] = (id, tail, 0, voice.Level);
+            voices[index] = (id, tail, 0, voice.Level, readClock());
         }
     }
     public void StopGameplay() { lock (gate) voices.RemoveAll(v => !v.Id.StartsWith("ext:ui_", StringComparison.Ordinal)); }
-    public void Fill(float[] output, int frames)
+    public void Fill(float[] output, int frames, double? now = null)
     {
         Array.Clear(output);
         lock (gate)
         {
+            long skipped = 0;
             for (int i = voices.Count - 1; i >= 0; i--)
             {
                 var v = voices[i];
+                if (now is double time)
+                {
+                    int expected = (int)Math.Clamp(Math.Floor((time - v.StartedAt) * 48000) * 2, int.MinValue, v.Data.Length);
+                    // Leave normal packet/callback jitter alone. After a stall,
+                    // advance each voice by its own age; a newly queued action
+                    // must not inherit an older voice's missed output time.
+                    if (expected > v.Pos + (long)frames * 2 || (v.Pos < 0 && expected >= 0))
+                    {
+                        skipped = Math.Max(skipped, ((long)expected - v.Pos) / 2);
+                        v.Pos = expected;
+                    }
+                }
                 int start = Math.Min(frames, Math.Max(0, -v.Pos / 2)), pos = Math.Max(0, v.Pos);
                 int n = Math.Min(frames - start, (v.Data.Length - pos) / 2);
                 for (int f = 0; f < n; f++) { output[(f + start) * 4 + 2] += v.Data[pos + f * 2] * gain * v.Level; output[(f + start) * 4 + 3] += v.Data[pos + f * 2 + 1] * gain * v.Level; }
                 int next = v.Pos + frames * 2;
-                if (next >= v.Data.Length) voices.RemoveAt(i); else voices[i] = (v.Id, v.Data, next, v.Level);
+                if (next >= v.Data.Length) voices.RemoveAt(i); else voices[i] = (v.Id, v.Data, next, v.Level, v.StartedAt);
             }
+            skippedFrames += skipped;
         }
         for (int i = 0; i < output.Length; i++) output[i] = Math.Clamp(output[i], -.85f, .85f);
     }
