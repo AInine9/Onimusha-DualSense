@@ -3,7 +3,7 @@ using System.Globalization;
 
 namespace OnimushaDualSense;
 
-sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool AutoLaunchGame, float AdaptiveTriggerStrength = 1, float GauntletVibration = 1, float SoulVibration = 1, float RiftVibration = 1)
+sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool AutoLaunchGame, float AdaptiveTriggerStrength = 1, float GauntletVibration = 1, float SoulVibration = 1, float RiftVibration = 1, bool ItemEffectVibration = true)
 {
     public static Configuration Read()
     {
@@ -15,7 +15,8 @@ sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool
         if (!float.IsFinite(adaptiveTriggerStrength) || adaptiveTriggerStrength < 0 || adaptiveTriggerStrength > 1) throw new InvalidDataException("adaptive_trigger_strength must be between 0 and 1");
         bool autoLaunchGame = config["auto_launch_game"]?.GetValue<bool>() ?? true;
         return new(config["game"]?.GetValue<string>() ?? "", gain, adaptiveTriggers, autoLaunchGame, adaptiveTriggerStrength,
-            Strength(config, "gauntlet_vibration"), Strength(config, "soul_vibration"), Strength(config, "rift_vibration"));
+            Strength(config, "gauntlet_vibration"), Strength(config, "soul_vibration"), Strength(config, "rift_vibration"),
+            config["item_effect_vibration"]?.GetValue<bool>() ?? true);
     }
     public void Save()
     {
@@ -28,6 +29,7 @@ sealed record Configuration(string Game, float Gain, bool AdaptiveTriggers, bool
             ["gauntlet_vibration"] = Number(GauntletVibration),
             ["soul_vibration"] = Number(SoulVibration),
             ["rift_vibration"] = Number(RiftVibration),
+            ["item_effect_vibration"] = ItemEffectVibration,
             ["auto_launch_game"] = AutoLaunchGame
         };
         Files.Save(Files.At("config.json"), config);

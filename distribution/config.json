@@ -6,5 +6,6 @@
   "gauntlet_vibration": 1.0,
   "soul_vibration": 1.0,
   "rift_vibration": 1.0,
+  "item_effect_vibration": true,
   "auto_launch_game": true
 }

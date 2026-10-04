@@ -166,6 +166,10 @@ static class Bridge
     // powers are lifted to keep the trigger firm while it grinds.
     const float SpawnerVibrationBoost = 1.5f;
 
+    internal static bool ItemEffectAllowed(Configuration config, JsonNode ev) =>
+        config.ItemEffectVibration || ev["kind"]?.ToString() != "extended" ||
+        ev["id"]?.ToString() != "heal" || ev["item_effect"]?.GetValue<bool>() != true;
+
     internal static byte[] SelectLeftTrigger(Configuration config, bool gameplay, bool nativeOwnsLeft,
         double now, double lastControl, double soulPulseUntil, byte[] nativeLeft, byte[] soulVibration, byte[] gauntletHum)
     {
@@ -226,9 +230,9 @@ static class Bridge
             // `trace_lua_session` scopes the trace ACK to the exact Lua
             // lifetime that produced the rows. A companion restart alone must
             // never acknowledge rows from a later script reload.
-            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, adaptive_triggers = config.AdaptiveTriggers, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent, defense_trace = true, trace_session = defenseTrace.Session, trace_lua_session = defenseTrace.LuaSession, trace_ack = defenseTrace.LastSeq });
+            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, adaptive_triggers = config.AdaptiveTriggers, item_effect_vibration = config.ItemEffectVibration, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent, defense_trace = true, trace_session = defenseTrace.Session, trace_lua_session = defenseTrace.LuaSession, trace_ack = defenseTrace.LastSeq });
 #else
-            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, adaptive_triggers = config.AdaptiveTriggers, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent });
+            return Files.Atomic(controlPath, new { timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds(), suppress_legacy = suppress, output_enabled = outputEnabled, adaptive_triggers = config.AdaptiveTriggers, item_effect_vibration = config.ItemEffectVibration, routes_token = routesToken, ack_session = inbox.Session == null ? null : JsonNode.Parse(inbox.Session), ack_event = inbox.LastEvent });
 #endif
         }
         using var hid = new HidRecovery(() => new Hid(), Files.Log);
@@ -304,7 +308,7 @@ static class Bridge
                                         string id = ev["id"]!.ToString();
                                         bool allowed = id.StartsWith("ui_", StringComparison.Ordinal)
                                             ? accepted.UiAllowed : accepted.Active && state["gameplay_allowed"]?.GetValue<bool>() == true;
-                                        if (allowed)
+                                        if (allowed && ItemEffectAllowed(config, ev))
                                         {
                                             double eventTime = now - Inbox.EventAge(state, ev, accepted.SnapshotAge);
                                             if (ev["defense_kind"] is JsonNode defense) queue.SetDefense(defense.GetValue<string>(), now);

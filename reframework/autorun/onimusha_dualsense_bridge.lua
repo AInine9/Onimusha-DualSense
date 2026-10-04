@@ -25,6 +25,7 @@ local function classify_defense(bits)
     return 'none'
 end
 local player_entity, player_character, previous_player, previous_state = nil, nil, nil, nil
+local item_effect_owner = nil
 local special_kind, special_frame = 'none', -1000
 local function special_context()
     if not player_entity or not player_character then return 'none' end
@@ -302,10 +303,25 @@ end)
 extra_hook('app.cPlayerJustDodgeSupporter','executeSuccessJustDodgeAction',function(args)
     if module_is_player(args) then extra('perfect_dodge',8) end
 end)
+-- Observe the item loop lifecycle rather than treating a cached effect field
+-- or any heal notification as proof of an active temporary item effect.
+extra_hook('app.cPlayerCharacterEntity','requestItemLoopEffect',function(args)
+    local entity=sdk.to_managed_object(args[2])
+    if same_object(entity,player_entity) then item_effect_owner=entity end
+end)
+extra_hook('app.cPlayerCharacterEntity','endItemLoopEffect',function(args)
+    if same_object(sdk.to_managed_object(args[2]),item_effect_owner) then item_effect_owner=nil end
+end)
 extra_hook('app.cPlayerCharacterEntity','onAddHealth',function(args)
     if not entity_is_player(args) then return end
     local kind,amount=sdk.to_int64(args[3]),sdk.to_int64(args[4])
-    if (kind==0 or kind==2) and amount>0 then extra('heal',15) end
+    if (kind==0 or kind==2) and amount>0 then
+        -- ADD_HEALTH_TYPE: HEAL=0, DAMAGE=1, REVIVE=2. Revival stays independent.
+        local item_effect=kind==0 and same_object(item_effect_owner,player_entity)==true
+        if not item_effect or not control or control.item_effect_vibration~=false then
+            extra('heal',15,item_effect and {item_effect=true} or nil)
+        end
+    end
     if kind==1 and amount~=0 then contact_frame=frames; extra('damage',18) end
 end)
 extra_hook('app.cPlayerSoulAbsorptionSupporter','executeSoulAbsorptionSuccess',function(args)
@@ -534,6 +550,7 @@ re.on_application_entry('LateUpdateBehavior', function()
         local info=manager and manager:call('getControllingPlayer')
         player_entity=info and info:call('get_CharacterEntity') or nil
         player_character=info and info:call('get_Character') or nil
+        if not same_object(item_effect_owner,player_entity) then item_effect_owner=nil end
         local technique=special_context()
         gameplay_allowed=enabled and not paused and player_entity~=nil and player_character~=nil
             and ((info:call('get_IsControl') and not player_entity:call('isEvent',false)) or technique~='none')

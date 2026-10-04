@@ -41,6 +41,7 @@ Edit `config.json` in the mod folder:
 - `rift_vibration` — Strength of the L2 vibration while a rift is being sealed. The accepted range is `0.0` to `1.0`, and the default value is `1.0`. A trigger plays one effect mode at a time, so this vibration takes the place of the resistance the rift profile would otherwise apply; set it to `0` to keep that resistance. The bow keeps its resistance either way.
 
   All three are ignored when `adaptive_triggers` is `false`, and all three scale with `adaptive_trigger_strength`. The trigger has eight strength steps, so low values can round down to silence.
+- `item_effect_vibration` — Enables recovery vibration while a temporary consumable effect is active. It defaults to `true`; set it to `false` and restart the mod to disable these repeated pulses. Attacks, defense, dodges, soul absorption, and recovery outside the item effect remain enabled. This setting is independent of `adaptive_triggers`.
 - `auto_launch_game` — Whether to launch the game automatically when the mod starts. It defaults to `true`; set it to `false` to start the game manually from Steam after running `Start-Mod.cmd`.
 
 ## Uninstall
