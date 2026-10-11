@@ -468,11 +468,15 @@ static class Focus
 
 sealed class AudioProgressWatchdog
 {
-    const double StallSeconds = 1, LatencyGrowthSeconds = .10, SustainedGrowthSeconds = 1;
+    const double StallSeconds = 1, LatencyGrowthSeconds = .05, SustainedGrowthSeconds = 1;
     double? baseline, slowSince;
 
-    public string? Check(double now, double lastCallback, double latency, double expectedLatency)
+    public string? Check(double now, double lastCallback, double latency, double expectedLatency,
+        double observedGap = 0, double observedRender = 0)
     {
+        // Retain interruptions even if callbacks resumed before the control loop.
+        if (observedGap > .25) return $"Audio callback gap was {observedGap * 1000:0} ms";
+        if (observedRender > .10) return $"Audio callback rendering took {observedRender * 1000:0} ms";
         if (now - lastCallback > StallSeconds) return "Audio callback stopped advancing for over one second";
         if (!double.IsFinite(latency) || latency <= 0) { slowSince = null; return null; }
         double healthy = Math.Max(expectedLatency, latency);
@@ -515,6 +519,8 @@ sealed class Audio : IDisposable
     int underflows;
     Exception? error;
     readonly AudioProgressWatchdog progress = new();
+    readonly AudioTimingHistory timingHistory = new();
+    public AudioTimingSnapshot Timing => timingHistory.Snapshot;
     double lastCallback = Files.Now, callbackLatency = double.NaN, expectedLatency;
     public int Underflows => Volatile.Read(ref underflows);
     static void Check(int code) { if (code < 0) throw new InvalidOperationException($"PortAudio {code}: {Marshal.PtrToStringUTF8(Pa_GetErrorText(code))}"); }
@@ -556,6 +562,7 @@ sealed class Audio : IDisposable
                 if (frames != 256) throw new InvalidOperationException("Unexpected audio buffer size");
                 if (flags != 0) Interlocked.Increment(ref underflows);
                 double now = Files.Now;
+                timingHistory.Started(now);
                 Volatile.Write(ref lastCallback, now);
                 if (timing != 0)
                 {
@@ -565,6 +572,7 @@ sealed class Audio : IDisposable
                 mixer.Fill(buffer, (int)frames, now);
                 if (normalOutput) { for (int i = 0; i < 256; i++) { stereo[i * 2] = buffer[i * 4 + 2]; stereo[i * 2 + 1] = buffer[i * 4 + 3]; } Marshal.Copy(stereo, 0, output, stereo.Length); }
                 else Marshal.Copy(buffer, 0, output, buffer.Length);
+                timingHistory.Completed(now, Files.Now, Volatile.Read(ref callbackLatency));
                 return 0;
             }
             catch (Exception e) { error = e; return 2; }
@@ -602,8 +610,9 @@ sealed class Audio : IDisposable
         if (state == 0) throw new AudioDeviceUnavailableException("Audio device disconnected or stopped");
         // An active PortAudio stream can still stop making progress or build
         // latency. Reuse the existing sink recovery path in both cases.
+        var observed = timingHistory.Consume();
         string? failure = progress.Check(Files.Now, Volatile.Read(ref lastCallback),
-            Volatile.Read(ref callbackLatency), expectedLatency);
+            Volatile.Read(ref callbackLatency), expectedLatency, observed.Gap, observed.Render);
         if (failure != null) throw new AudioDeviceUnavailableException(failure);
     }
     public void Dispose()

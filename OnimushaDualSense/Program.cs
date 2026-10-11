@@ -17,6 +17,9 @@ static class Program
                 case "uninstall": Setup.Uninstall(); return 0;
                 case "run": return Bridge.Run(args);
                 case "stop": File.WriteAllText(Files.Data("stop.request"), "stop"); return 0;
+                case "reset-audio":
+                    File.WriteAllText(Files.Data("reset-audio.request"), "reset");
+                    Console.WriteLine("Audio reset requested. Keep the game and MOD running."); return 0;
                 case "launch":
                     var config = Configuration.Read();
                     if (string.IsNullOrWhiteSpace(config.Game)) throw new InvalidOperationException("Run Setup.cmd first");
@@ -50,7 +53,7 @@ static class Program
                     DefenseSounds.Prepare(Path.GetFullPath(args[1]), Path.GetFullPath(args[2])); return 0;
 #endif
                 default:
-                    Console.WriteLine("Onimusha DualSense 1.3.1\nCommands: setup, launch, run, stop, uninstall, diagnose, prepare-waves");
+                    Console.WriteLine($"Onimusha DualSense 1.3.1 ({Bridge.PreviewBuild})\nCommands: setup, launch, run, stop, reset-audio, uninstall, diagnose, prepare-waves");
                     return command == "help" ? 0 : 1;
             }
         }

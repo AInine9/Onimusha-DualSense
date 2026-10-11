@@ -7,6 +7,7 @@ interface IRuntimeOutputSink : IDisposable
 {
     double OutputLatency { get; }
     int Underflows { get; }
+    AudioTimingSnapshot Timing => default;
     void CheckHealth();
 }
 
@@ -14,6 +15,7 @@ sealed class AudioOutputSink(Audio audio) : IRuntimeOutputSink
 {
     public double OutputLatency => audio.OutputLatency;
     public int Underflows => audio.Underflows;
+    public AudioTimingSnapshot Timing => audio.Timing;
     public void CheckHealth() => audio.CheckHealth();
     public void Dispose() => audio.Dispose();
 }
@@ -44,6 +46,26 @@ sealed class RuntimeOutputCoordinator : IDisposable
     int absentObservations;
     double nextPoll, nextOpen;
     bool disposed;
+    AudioTimingSnapshot historicalTiming;
+    public int AudioRecoveries { get; private set; }
+    public string? LastRecoveryReason { get; private set; }
+    public AudioTimingSnapshot Timing => Merge(historicalTiming, sink?.Timing ?? default);
+    static AudioTimingSnapshot Merge(AudioTimingSnapshot a, AudioTimingSnapshot b) =>
+        new(Math.Max(a.MaxGapMs, b.MaxGapMs), Math.Max(a.MaxRenderMs, b.MaxRenderMs), Math.Max(a.MaxLatencyMs, b.MaxLatencyMs));
+    void CloseSink()
+    {
+        historicalTiming = Timing;
+        sink?.Dispose(); sink = null;
+    }
+    public bool ResetAudio(double now)
+    {
+        if (disposed) throw new ObjectDisposedException(nameof(RuntimeOutputCoordinator));
+        if (route != RuntimeOutputRoute.Audio) return false;
+        LastRecoveryReason = "Manual audio reset"; AudioRecoveries++;
+        log("C# companion: manual audio reset requested; reopening the audio path.");
+        CloseSink(); nextOpen = now + PollIntervalSeconds;
+        return true;
+    }
 
     public RuntimeOutputCoordinator(HidRecovery hid, Action<string> log,
         Func<Audio> openAudio, Func<BluetoothHaptics> openBluetooth, Func<List<Hid.Device>> find)
@@ -80,7 +102,8 @@ sealed class RuntimeOutputCoordinator : IDisposable
             catch (AudioDeviceUnavailableException e)
             {
                 log($"C# companion: audio output health check failed ({e.Message}); reopening the audio path.");
-                sink.Dispose(); sink = null; nextOpen = now + PollIntervalSeconds;
+                LastRecoveryReason = e.Message; AudioRecoveries++;
+                CloseSink(); nextOpen = now + PollIntervalSeconds;
             }
         }
         if (sink == null && now >= nextOpen) TryOpen(now);
@@ -109,7 +132,7 @@ sealed class RuntimeOutputCoordinator : IDisposable
         if (selected != route) { ChangeRoute(selected, now); return; }
         if (previousKey != stableKey)
         {
-            sink?.Dispose(); sink = null;
+            CloseSink();
             nextOpen = now;
         }
         // A new USB/Bluetooth path can have the same route but a stale native handle.
@@ -120,7 +143,7 @@ sealed class RuntimeOutputCoordinator : IDisposable
 
     void ChangeRoute(RuntimeOutputRoute selected, double now)
     {
-        sink?.Dispose(); sink = null;
+        CloseSink();
         hid.Rebind();
         route = selected;
         nextOpen = now;
@@ -154,6 +177,7 @@ sealed class RuntimeOutputCoordinator : IDisposable
 
 static class Bridge
 {
+    internal const string PreviewBuild = "usb-recovery-preview-20261011";
     // A bounded polling interval that trims idle CPU/USB traffic while keeping companion latency low.
     const int CompanionLoopSleepMilliseconds = 8;
     // Keep a margin below the one-second freshness watchdog when a write is delayed.
@@ -184,6 +208,8 @@ static class Bridge
         using var mutex = new Mutex(false, @"Local\OnimushaDualSenseBridge", out bool created);
         if (!created) { Files.Log("Another companion is already running."); return 0; }
         File.Delete(Files.Data("stop.request"));
+        File.Delete(Files.Data("reset-audio.request"));
+        Files.Log($"C# companion build: {PreviewBuild}");
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; File.WriteAllText(Files.Data("stop.request"), "stop"); };
         var config = Configuration.Read();
         if (!File.Exists(Path.Combine(config.Game, "OnimushaWotS.exe"))) throw new InvalidOperationException("Run Setup.cmd first");
@@ -253,9 +279,20 @@ static class Bridge
             double soulPulseUntil = double.NegativeInfinity;
             bool? lastSuppress = null;
             bool? lastOutputEnabled = null;
+            double previousLoop = began, maxLoopGap = 0, maxHidWrite = 0, nextResetPoll = 0;
             while (!File.Exists(Files.Data("stop.request")))
             {
                 double now = Files.Now;
+                maxLoopGap = Math.Max(maxLoopGap, now - previousLoop); previousLoop = now;
+                if (now >= nextResetPoll)
+                {
+                    nextResetPoll = now + .5;
+                    if (File.Exists(Files.Data("reset-audio.request")))
+                    {
+                        File.Delete(Files.Data("reset-audio.request"));
+                        if (!outputs.ResetAudio(now)) Files.Log("Manual audio reset ignored: Bluetooth output is active.");
+                    }
+                }
                 outputs.Update(now);
                 now = Files.Now;
 #if DEVELOPER
@@ -366,11 +403,16 @@ static class Bridge
                 }
                 left = SelectLeftTrigger(config, gameplay, nativeOwnsLeft, now, lastControl,
                     soulPulseUntil, left, soulVibration, gauntletHum);
+                double hidBegan = Files.Now;
                 hid.TrySend(Protocol.Report(right, left, suppress), now);
+                maxHidWrite = Math.Max(maxHidWrite, Files.Now - hidBegan);
                 if (now - lastStatus > 2)
                     if (Files.Atomic(Files.Data("status.json"), new { running = true, active, trigger, extended_plays = queue.ExtraPlays,
                         extended_audio_active = mixer.Playing, defense_kind = queue.DefenseKind, parry_plays = queue.ParryPlays,
                         skipped_extensions = queue.Skipped, suppression_requested = suppress, sound_reference_events = extensions.SoundEvents.Count,
+                        build = PreviewBuild, audio_recoveries = outputs.AudioRecoveries,
+                        last_audio_recovery = outputs.LastRecoveryReason, audio_timing = outputs.Timing,
+                        companion_max_loop_gap_ms = maxLoopGap * 1000, hid_max_send_ms = maxHidWrite * 1000,
                         audio_underflows = outputs.AudioUnderflows, output_latency_ms = outputs.OutputLatency * 1000,
                         output_skipped_frames = mixer.SkippedFrames, control_writes = hid.ControlWrites,
                         control_reports_coalesced = hid.CoalescedReports, stale_events_dropped = inbox.StaleEvents,
